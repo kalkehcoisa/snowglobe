@@ -1,312 +1,419 @@
-# Snowglobe 🌐❄️
+# ❄️ Snowglobe - Enhanced Local Snowflake Emulator
 
-A local Snowflake emulator for Python developers. Work offline, test locally, and develop without a Snowflake subscription.
+<div align="center">
 
-## Features
+![Snowglobe](https://img.shields.io/badge/Snowglobe-v0.2.0-blue?logo=snowflake)
+![Python](https://img.shields.io/badge/Python-3.11+-green?logo=python)
+![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)
+![HTTPS](https://img.shields.io/badge/HTTPS-Enabled-success?logo=lock)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
-- **Local Snowflake Emulation**: Mimics Snowflake SQL behavior using DuckDB as the backend
-- **Docker-Based**: Runs in an isolated container
-- **Standard Connector Compatible**: Works with the official snowflake-connector-python (full protocol support)
-- **SQL Compatibility**: Supports common Snowflake SQL syntax and functions
-- **UNDROP Support**: Recover dropped databases, schemas, tables, and views
-- **Debug Dashboard**: Built-in web dashboard for monitoring sessions, queries, and logs
-- **Zero Cost**: No Snowflake subscription required
-- **Offline Development**: Works without internet connection
-- **Testing Ready**: Perfect for unit and functional testing with tox support
+**A production-ready local Snowflake emulator with SSL/TLS support and a modern web interface**
 
-## Quick Start
+[Features](#features) • [Quick Start](#quick-start) • [HTTPS Setup](#https-setup) • [Usage](#usage) • [Documentation](#documentation)
 
-### Using Docker Compose
+</div>
+
+---
+
+## 🎯 Overview
+
+Snowglobe is a **local Snowflake emulator** designed for Python developers. This enhanced version includes:
+
+- ✅ **SSL/TLS/HTTPS Support** - Full HTTPS encryption, matching Snowflake's security standards
+- ✅ **Modern Web UI** - Side menu navigation with multiple views
+- ✅ **SQL Worksheet** - Snowflake-like query interface with syntax highlighting
+- ✅ **Query History** - Track all queries with execution details
+- ✅ **Database Explorer** - Browse databases, schemas, and tables
+- ✅ **Session Management** - Monitor active connections
+- ✅ **Real-time Stats** - Performance metrics and monitoring
+- ✅ **Docker Support** - Easy deployment with Docker Compose
+
+---
+
+## 🚀 Features
+
+### 🔒 Security & HTTPS
+
+- **SSL/TLS Encryption** - HTTPS enabled by default
+- **Auto-generated Certificates** - Self-signed certificates for local development
+- **Custom Certificates** - Support for custom SSL certificates
+- **Dual Protocol** - HTTP (8084) and HTTPS (8443) support
+
+### 📝 SQL Worksheet
+
+- **Snowflake-Compatible** - Write and execute SQL queries
+- **Syntax Highlighting** - Dark theme code editor
+- **Query History** - Track all executed queries
+- **Sample Queries** - Quick-start examples
+- **Results Export** - Download results as CSV
+- **Keyboard Shortcuts** - Ctrl/Cmd+Enter to execute
+
+### 🗄️ Database Management
+
+- **Multi-Database** - Create and manage multiple databases
+- **Schema Support** - Full schema hierarchy
+- **Table Operations** - CREATE, INSERT, SELECT, UPDATE, DELETE
+- **Metadata Tracking** - Track all database objects
+
+### 📊 Monitoring Dashboard
+
+- **Side Navigation** - Easy access to all features
+- **Real-time Stats** - Active sessions, query counts, performance
+- **Query History View** - Filter and analyze past queries
+- **Session Explorer** - Monitor active connections
+- **Settings Panel** - Configure and view system settings
+
+---
+
+## 🏃 Quick Start
+
+### Using Docker (Recommended)
 
 ```bash
-# Start Snowglobe server
+# Clone or extract the project
+cd enhanced_snowglobe
+
+# Build and start with Docker Compose
 docker-compose up -d
 
-# The server will be available at localhost:8084
+# Access the dashboard
+# HTTPS (recommended): https://localhost:8443/dashboard
+# HTTP (fallback): http://localhost:8084/dashboard
 ```
 
-### Using the Standard Snowflake Connector
+### Manual Setup
+
+```bash
+# Install dependencies
+pip install -r requirements-server.txt
+
+# Set environment variables
+export SNOWGLOBE_ENABLE_HTTPS=true
+export SNOWGLOBE_PORT=8084
+export SNOWGLOBE_HTTPS_PORT=8443
+
+# Run the server
+python -m snowglobe_server.server
+```
+
+---
+
+## 🔐 HTTPS Setup
+
+### Default Configuration
+
+Snowglobe automatically generates self-signed SSL certificates on first run:
+
+```bash
+# Certificates are created at:
+/app/certs/cert.pem  # SSL Certificate
+/app/certs/key.pem   # Private Key
+```
+
+### Custom Certificates
+
+To use your own SSL certificates:
+
+```bash
+# 1. Create a certs directory
+mkdir certs
+
+# 2. Copy your certificates
+cp your-cert.pem certs/cert.pem
+cp your-key.pem certs/key.pem
+
+# 3. Mount the directory in Docker Compose
+volumes:
+  - ./certs:/app/certs:ro
+```
+
+### Generate Custom Self-Signed Certificate
+
+```bash
+openssl req -x509 -newkey rsa:4096 -nodes \
+  -out certs/cert.pem \
+  -keyout certs/key.pem \
+  -days 365 \
+  -subj "/C=US/ST=CA/L=SF/O=MyOrg/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,DNS:snowglobe,IP:127.0.0.1"
+```
+
+### Trust the Certificate (Optional)
+
+For local development without browser warnings:
+
+**macOS:**
+```bash
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain certs/cert.pem
+```
+
+**Linux:**
+```bash
+sudo cp certs/cert.pem /usr/local/share/ca-certificates/snowglobe.crt
+sudo update-ca-certificates
+```
+
+**Windows:**
+```powershell
+certutil -addstore -f "ROOT" certs\cert.pem
+```
+
+---
+
+## 📖 Usage
+
+### 1. Connect with Snowflake Python Connector
 
 ```python
 import snowflake.connector
 
-# Connect to local Snowglobe server using standard connector
+# HTTPS Connection (Recommended)
 conn = snowflake.connector.connect(
+    account='localhost',
+    user='dev',
+    password='dev',
     host='localhost',
-    port=8084,
-    user='test_user',
-    password='test_password',
-    database='test_db',
-    schema='public',
-    account='snowglobe',
-    insecure_mode=True,        # no TSL for now
-    protocol='http'            # only HTTP available for now
+    port=8443,
+    protocol='https',
+    insecure_mode=True,  # For self-signed certificates
+    database='TEST_DB',
+    schema='PUBLIC'
 )
 
-# Execute queries just like with Snowflake
 cursor = conn.cursor()
-cursor.execute("CREATE TABLE users (id INT, name VARCHAR, email VARCHAR)")
-cursor.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')")
-cursor.execute("SELECT * FROM users")
-
-for row in cursor:
-    print(row)
-
-# UNDROP feature - recover dropped objects
-cursor.execute("DROP TABLE users")
-cursor.execute("UNDROP TABLE users")  # Restore the table!
-
-cursor.close()
-conn.close()
+cursor.execute("SELECT CURRENT_VERSION()")
+print(cursor.fetchone())
 ```
 
-## Installation
+### 2. Use the Web Interface
 
-### Server (Docker)
+**Access the Dashboard:**
+- HTTPS: `https://localhost:8443/dashboard`
+- HTTP: `http://localhost:8084/dashboard`
 
-```bash
-# Build the Docker image
-docker build -t snowglobe:latest .
+**Main Features:**
 
-# Run the container
-docker run -d -p 8084:8084 --name snowglobe snowglobe:latest
+1. **📝 Worksheet** - Write and execute SQL queries
+   - Syntax-highlighted editor
+   - Sample queries for quick start
+   - Export results to CSV
+   - Keyboard shortcuts
+
+2. **📊 Overview** - System statistics and monitoring
+   - Active sessions
+   - Query performance
+   - Server uptime
+
+3. **🕒 Query History** - View past queries
+   - Execution status
+   - Duration and row counts
+   - Error messages
+
+4. **🔗 Sessions** - Monitor active connections
+   - User information
+   - Database context
+   - Session duration
+
+5. **🗄️ Databases** - Browse database objects
+   - Database list
+   - Schema hierarchy
+   - Table details
+
+6. **⚙️ Settings** - Configuration and information
+   - Server status
+   - Connection details
+   - Performance metrics
+   - Environment variables
+
+### 3. Example Queries
+
+```sql
+-- Create a database and schema
+CREATE DATABASE IF NOT EXISTS my_database;
+USE DATABASE my_database;
+CREATE SCHEMA IF NOT EXISTS my_schema;
+USE SCHEMA my_schema;
+
+-- Create a table
+CREATE TABLE customers (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR,
+    created_at TIMESTAMP
+);
+
+-- Insert data
+INSERT INTO customers VALUES
+    (1, 'Alice Johnson', 'alice@example.com', CURRENT_TIMESTAMP),
+    (2, 'Bob Smith', 'bob@example.com', CURRENT_TIMESTAMP),
+    (3, 'Carol White', 'carol@example.com', CURRENT_TIMESTAMP);
+
+-- Query data
+SELECT * FROM customers;
+
+-- Aggregation
+SELECT COUNT(*) as total_customers FROM customers;
+
+-- Show objects
+SHOW DATABASES;
+SHOW SCHEMAS IN DATABASE my_database;
+SHOW TABLES IN SCHEMA my_database.my_schema;
 ```
-
-### Python Client
-
-```bash
-# Install the standard Snowflake connector
-pip install snowflake-connector-python
-
-# Or install Snowglobe with client extras
-pip install snowglobe[client]
-```
-
-## Supported Features
-
-### SQL Operations
-- CREATE/DROP DATABASE
-- CREATE/DROP SCHEMA
-- CREATE/DROP TABLE
-- UNDROP DATABASE/SCHEMA/TABLE/VIEW
-- TRUNCATE TABLE
-- ALTER TABLE RENAME
-- CREATE TABLE CLONE
-- INSERT, UPDATE, DELETE
-- SELECT with JOINs, WHERE, GROUP BY, ORDER BY, LIMIT
-- Common aggregate functions (COUNT, SUM, AVG, MIN, MAX)
-- Window functions
-- CTEs (Common Table Expressions)
-- SHOW DATABASES/SCHEMAS/TABLES
-- SHOW DROPPED DATABASES/SCHEMAS/TABLES
-
-### Snowflake-Specific Functions
-- CURRENT_TIMESTAMP(), CURRENT_DATE(), CURRENT_TIME()
-- DATEADD(), DATEDIFF()
-- TO_DATE(), TO_TIMESTAMP()
-- NVL(), NVL2(), COALESCE()
-- IFF(), DECODE()
-- PARSE_JSON(), OBJECT_CONSTRUCT()
-- ARRAY_AGG(), ARRAY_CONSTRUCT()
-- SPLIT_PART(), REGEXP_LIKE()
-- And many more...
-
-### Data Types
-- NUMBER/NUMERIC/DECIMAL/INT/INTEGER/BIGINT/SMALLINT/TINYINT/FLOAT/DOUBLE
-- VARCHAR/CHAR/STRING/TEXT
-- BOOLEAN
-- DATE/TIME/TIMESTAMP/TIMESTAMP_NTZ/TIMESTAMP_LTZ/TIMESTAMP_TZ
-- VARIANT/OBJECT/ARRAY
-- BINARY/VARBINARY
-
-## Debug Dashboard
-
-Snowglobe includes a built-in web dashboard for monitoring and debugging:
-
-```bash
-# Access the dashboard at:
-http://localhost:8084/dashboard
-```
-
-### Dashboard Features
-
-- **Server Overview**: Uptime, active sessions, query statistics
-- **Query History**: View all executed queries with status, duration, and error details
-- **Session Monitoring**: Track active sessions and their context (database, schema, warehouse, role)
-- **Auto-refresh**: Real-time updates (every 5 seconds)
-
-### Frontend Development
-
-For a more feature-rich dashboard experience, use the Vue.js frontend:
-
-```bash
-cd frontend
-npm install
-npm run dev
-# Dashboard available at http://localhost:3000
-```
-
-## Configuration
-
-### Environment Variables
-
-- `SNOWGLOBE_PORT`: Server port (default: 8084)
-- `SNOWGLOBE_DATA_DIR`: Data directory path (default: /data)
-- `SNOWGLOBE_LOG_LEVEL`: Logging level (default: INFO)
-
-### Docker Compose Configuration
-
-```yaml
-version: '3.8'
-services:
-  snowglobe:
-    build: .
-    ports:
-      - "8084:8084"
-    volumes:
-      - snowglobe_data:/data
-    environment:
-      - SNOWGLOBE_LOG_LEVEL=DEBUG
-
-volumes:
-  snowglobe_data:
-```
-
-## Testing
-
-Run the test suite:
-
-```bash
-# Install test dependencies
-pip install -e .[test]
-
-# Run tests with pytest
-pytest tests/
-
-# Run authentication tests specifically
-pytest tests/test_authentication.py -v
-
-# Run tests with tox (multiple Python versions)
-tox
-
-# Run specific test environment
-tox -e py311
-
-# Run linting
-tox -e lint
-
-# Run type checking
-tox -e typecheck
-
-# Run integration tests
-tox -e integration
-
-# Run tests in Docker
-tox -e docker
-```
-
-### Test Fixtures
-
-Tests use shared fixtures defined in `tests/conftest.py` for:
-- Temporary directories
-- Metadata store instances
-- Query executor instances
-- Sample data setups
-- Dropped objects for UNDROP testing
-
-### Authentication Tests
-
-The authentication system has comprehensive tests covering:
-- Snowflake protocol compatibility
-- Session management
-- Token generation and validation
-- Gzip request compression handling
-- Query execution through the authenticated channel
-- Error handling and edge cases
-
-## Architecture
-
-Snowglobe consists of:
-
-1. **Server**: A FastAPI-based HTTP server implementing the Snowflake REST API protocol
-2. **Authentication**: Full Snowflake-compatible authentication with session tokens
-3. **SQL Engine**: DuckDB-based query executor with Snowflake SQL translation
-4. **Metadata Store**: Manages databases, schemas, and table metadata with UNDROP support
-5. **Dashboard**: Built-in web dashboard for monitoring and debugging
-6. **Standard Connector**: Uses official snowflake-connector-python
-
-```
-┌─────────────────┐     HTTP/JSON     ┌─────────────────┐
-│   Snowflake     │ ◄──────────────► │  Snowglobe      │
-│   Connector     │  (Snowflake API) │  Server         │
-│   (standard)    │                   │  (FastAPI)      │
-└─────────────────┘                   └────────┬────────┘
-                                               │
-                                      ┌────────▼────────┐
-                                      │  Authentication │
-                                      │  & Sessions     │
-                                      └────────┬────────┘
-                                               │
-                                      ┌────────▼────────┐
-                                      │  SQL Translator │
-                                      │  & Executor     │
-                                      └────────┬────────┘
-                                               │
-                                      ┌────────▼────────┐
-                                      │    DuckDB       │
-                                      │   (Backend)     │
-                                      └─────────────────┘
-```
-
-### API Endpoints
-
-**Snowflake Protocol Endpoints:**
-- `POST /session/v1/login-request` - Authenticate and create session
-- `POST /queries/v1/query-request` - Execute SQL queries
-- `POST /session` - Close session
-
-**Dashboard API Endpoints:**
-- `GET /dashboard` - Embedded web dashboard
-- `GET /api/stats` - Server statistics
-- `GET /api/sessions` - List active sessions
-- `GET /api/queries` - Query history
-- `GET /api/databases` - List databases
-- `DELETE /api/queries/history` - Clear query history
-
-## Limitations
-
-- Not all Snowflake functions are implemented (contributions welcome!)
-- UNDROP restores metadata but data may not be fully preserved in all cases
-- No support for Snowflake-specific features like:
-  - Time Travel (partial - UNDROP supported)
-  - Data Sharing
-  - Streams and Tasks
-  - Stored Procedures (limited support)
-- Performance characteristics differ from actual Snowflake
-- No multi-cluster warehouse simulation
-
-## Use Cases
-
-1. **Local Development**: Develop Snowflake-based applications without cloud costs
-2. **Unit Testing**: Test SQL queries and data pipelines locally
-3. **CI/CD Pipelines**: Run automated tests without Snowflake credentials
-4. **Learning**: Study Snowflake SQL syntax without a subscription
-5. **Prototyping**: Quickly prototype data models and queries
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- Inspired by [LocalStack](https://github.com/localstack/localstack)
-- Built on [DuckDB](https://duckdb.org/) for SQL execution
-- Uses [FastAPI](https://fastapi.tiangolo.com/) for the server
 
 ---
 
-**Note**: Snowglobe is not affiliated with Snowflake Inc. This is an independent open-source project for local development and testing purposes.
+## 🐳 Docker Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SNOWGLOBE_PORT` | `8084` | HTTP port |
+| `SNOWGLOBE_HTTPS_PORT` | `8443` | HTTPS port |
+| `SNOWGLOBE_ENABLE_HTTPS` | `true` | Enable HTTPS |
+| `SNOWGLOBE_DATA_DIR` | `/data` | Data directory |
+| `SNOWGLOBE_LOG_LEVEL` | `INFO` | Logging level |
+| `SNOWGLOBE_CERT_PATH` | `/app/certs/cert.pem` | SSL certificate path |
+| `SNOWGLOBE_KEY_PATH` | `/app/certs/key.pem` | SSL key path |
+
+### Docker Compose Example
+
+```yaml
+version: '3.8'
+
+services:
+  snowglobe:
+    build: .
+    container_name: snowglobe
+    ports:
+      - "8084:8084"   # HTTP
+      - "8443:8443"   # HTTPS
+    volumes:
+      - snowglobe-data:/data
+      - ./certs:/app/certs:ro  # Custom certificates
+    environment:
+      - SNOWGLOBE_ENABLE_HTTPS=true
+      - SNOWGLOBE_LOG_LEVEL=INFO
+    restart: unless-stopped
+
+volumes:
+  snowglobe-data:
+```
+
+---
+
+## 🔧 Development
+
+### Frontend Development
+
+```bash
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+
+# Build for production
+npm run build
+```
+
+### Backend Development
+
+```bash
+# Install in development mode
+pip install -e .
+
+# Run tests
+pytest
+
+# Run with auto-reload
+uvicorn snowglobe_server.server:app --reload --port 8084
+```
+
+---
+
+## 📚 API Documentation
+
+### Snowflake-Compatible Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/session/v1/login-request` | POST | Authenticate and create session |
+| `/queries/v1/query-request` | POST | Execute SQL query |
+| `/session` | POST | Close session |
+
+### Frontend API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/execute` | POST | Execute query from worksheet |
+| `/api/sessions` | GET | List active sessions |
+| `/api/queries` | GET | Get query history |
+| `/api/databases` | GET | List databases |
+| `/api/stats` | GET | Get server statistics |
+| `/health` | GET | Health check |
+
+---
+
+## 🎨 Screenshots
+
+### SQL Worksheet
+```
+┌─────────────────────────────────────────────────┐
+│ 📝 SQL Worksheet                    [▶️ Run]    │
+├─────────────────────────────────────────────────┤
+│ SELECT * FROM customers;                        │
+│                                                  │
+│ ┌─────────────────────────────────────────┐    │
+│ │ ✅ Query Results                         │    │
+│ │ 📊 3 row(s) | ⏱️ 12.34ms                 │    │
+│ ├─────────────────────────────────────────┤    │
+│ │ ID │ NAME          │ EMAIL              │    │
+│ │ 1  │ Alice Johnson │ alice@example.com  │    │
+│ │ 2  │ Bob Smith     │ bob@example.com    │    │
+│ │ 3  │ Carol White   │ carol@example.com  │    │
+│ └─────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+
+## 📝 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- Built with FastAPI and DuckDB
+- Frontend powered by Vue.js
+- Inspired by Snowflake's architecture
+
+---
+
+## 📧 Support
+
+For issues, questions, or contributions:
+- Open an issue on GitHub
+- Check the documentation
+- Review sample queries in the Worksheet
+
+---
+
+<div align="center">
+
+**Made with ❄️ by the Snowglobe Team**
+
+[⬆ Back to Top](#-snowglobe---enhanced-local-snowflake-emulator)
+
+</div>

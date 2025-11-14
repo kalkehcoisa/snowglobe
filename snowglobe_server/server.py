@@ -643,6 +643,62 @@ async def clear_query_history():
     return {"success": True, "message": "Query history cleared"}
 
 
+@app.post("/api/execute")
+async def execute_query(request: Request):
+    """Execute a query from the frontend worksheet"""
+    try:
+        body = await request.json()
+        sql = body.get("sql", "").strip()
+        
+        if not sql:
+            return {"success": False, "error": "No SQL provided"}
+        
+        # Create a temporary session if none exists, or use first available
+        if sessions:
+            first_session = next(iter(sessions.values()))
+            executor = first_session["executor"]
+            session_id = first_session["session_id"]
+        else:
+            # Create temporary executor
+            executor = QueryExecutor(data_dir)
+            session_id = "frontend-temp"
+        
+        # Execute query
+        start_time = datetime.utcnow()
+        result = executor.execute(sql)
+        end_time = datetime.utcnow()
+        duration_ms = (end_time - start_time).total_seconds() * 1000
+        
+        # Add to history
+        add_query_to_history(
+            sql,
+            session_id,
+            result["success"],
+            duration_ms,
+            result["rowcount"],
+            result.get("error")
+        )
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "columns": result["columns"],
+                "data": result["data"],
+                "rowcount": result["rowcount"],
+                "duration_ms": duration_ms
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "duration_ms": duration_ms
+            }
+    
+    except Exception as e:
+        logger.error(f"Frontend query execution error: {str(e)}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     """Serve embedded dashboard HTML"""
@@ -858,17 +914,59 @@ def main():
     import uvicorn
     
     port = int(os.getenv("SNOWGLOBE_PORT", "8084"))
+    https_port = int(os.getenv("SNOWGLOBE_HTTPS_PORT", "8443"))
     host = os.getenv("SNOWGLOBE_HOST", "0.0.0.0")
+    enable_https = os.getenv("SNOWGLOBE_ENABLE_HTTPS", "false").lower() == "true"
     
-    logger.info(f"Starting Snowglobe server on {host}:{port}")
+    # SSL/TLS certificate paths
+    cert_path = os.getenv("SNOWGLOBE_CERT_PATH", "/app/certs/cert.pem")
+    key_path = os.getenv("SNOWGLOBE_KEY_PATH", "/app/certs/key.pem")
     
-    uvicorn.run(
-        "snowglobe_server.server:app",
-        host=host,
-        port=port,
-        log_level="info",
-        reload=False
-    )
+    if enable_https and os.path.exists(cert_path) and os.path.exists(key_path):
+        logger.info(f"Starting Snowglobe server with HTTPS on {host}:{https_port}")
+        logger.info(f"SSL Certificate: {cert_path}")
+        logger.info(f"Also serving HTTP on {host}:{port}")
+        
+        # Start HTTPS server in main thread
+        import threading
+        
+        # Start HTTP server in background thread for health checks and backward compatibility
+        def run_http():
+            uvicorn.run(
+                "snowglobe_server.server:app",
+                host=host,
+                port=port,
+                log_level="warning",
+                reload=False
+            )
+        
+        http_thread = threading.Thread(target=run_http, daemon=True)
+        http_thread.start()
+        
+        # Run HTTPS server in main thread
+        uvicorn.run(
+            "snowglobe_server.server:app",
+            host=host,
+            port=https_port,
+            log_level="info",
+            reload=False,
+            ssl_keyfile=key_path,
+            ssl_certfile=cert_path,
+            ssl_version=3,  # TLS 1.2+
+            ssl_cert_reqs=0,  # Don't require client certificates
+        )
+    else:
+        logger.info(f"Starting Snowglobe server on {host}:{port} (HTTP only)")
+        if enable_https:
+            logger.warning(f"HTTPS enabled but certificates not found at {cert_path} and {key_path}")
+        
+        uvicorn.run(
+            "snowglobe_server.server:app",
+            host=host,
+            port=port,
+            log_level="info",
+            reload=False
+        )
 
 
 if __name__ == "__main__":

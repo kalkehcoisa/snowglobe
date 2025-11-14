@@ -1,88 +1,155 @@
 # Changelog
 
-## [Unreleased]
+All notable changes to Snowglobe will be documented in this file.
 
-### Removed
-- **snowglobe_client package** - Removed custom client library in favor of using the standard `snowflake-connector-python`
+## [0.2.0] - 2024-01-XX - Enhanced Edition
 
-### Added
-- **UNDROP operations** - Full support for recovering dropped objects:
-  - `UNDROP DATABASE <name>` - Restore dropped database
-  - `UNDROP SCHEMA <name>` - Restore dropped schema
-  - `UNDROP TABLE <name>` - Restore dropped table
-  - `UNDROP VIEW <name>` - Restore dropped view
-  - `SHOW DROPPED DATABASES` - List all dropped databases
-  - `SHOW DROPPED SCHEMAS` - List all dropped schemas
-  - `SHOW DROPPED TABLES` - List all dropped tables
+### 🎉 Major Features
 
-- **Additional Snowflake operations**:
-  - `TRUNCATE TABLE <name>` - Clear all data from table
-  - `ALTER TABLE <old> RENAME TO <new>` - Rename table
-  - `CREATE TABLE <new> CLONE <source>` - Clone table with data
+#### SSL/TLS/HTTPS Support
+- ✅ Full HTTPS encryption support
+- ✅ Auto-generation of self-signed SSL certificates
+- ✅ Support for custom SSL certificates
+- ✅ Dual protocol support (HTTP + HTTPS)
+- ✅ TLS 1.2+ implementation
+- ✅ Snowflake-standard secure connections
 
-- **Tox configuration** - Added `tox.ini` for testing across multiple Python versions and environments:
-  - `py38`, `py39`, `py310`, `py311`, `py312` - Test on different Python versions
-  - `lint` - Code style checking with black, flake8, isort
-  - `typecheck` - Type checking with mypy
-  - `format` - Auto-format code
-  - `integration` - Run integration tests
-  - `docker` - Run tests in Docker container
+#### New User Interface
+- ✅ Side menu navigation
+- ✅ Modern, responsive design
+- ✅ Six main views: Worksheet, Overview, Query History, Sessions, Databases, Settings
+- ✅ Dark theme SQL editor
+- ✅ Real-time updates
+- ✅ Improved mobile responsiveness
 
-- **Shared test fixtures** - Created `tests/conftest.py` with reusable fixtures:
-  - `temp_dir` - Temporary directory for test data
-  - `metadata_store` - MetadataStore instance
-  - `query_executor` - QueryExecutor instance
-  - `sql_translator` - SQL translator instance
-  - `sample_database` - Database with sample schema
-  - `sample_table` - Table with sample columns
-  - `sample_view` - View with sample definition
-  - `executor_with_data` - Executor with products and orders data
-  - `executor_with_aggregates` - Executor with numeric data for aggregate tests
-  - `executor_with_groups` - Executor with grouped data
-  - `multiple_schemas` - Multiple schemas for testing
-  - `dropped_objects` - Pre-dropped objects for UNDROP testing
+#### SQL Worksheet
+- ✅ Snowflake-like query interface
+- ✅ Syntax-highlighted code editor
+- ✅ Sample queries for quick start
+- ✅ Query result pagination
+- ✅ CSV export functionality
+- ✅ Keyboard shortcuts (Ctrl/Cmd+Enter)
+- ✅ Query formatting
+- ✅ Multi-line query support
 
-- **Comprehensive UNDROP tests** - New test file `tests/test_undrop.py`:
-  - Tests for UNDROP DATABASE operations
-  - Tests for UNDROP SCHEMA operations
-  - Tests for UNDROP TABLE operations
-  - Tests for UNDROP VIEW operations
-  - Workflow tests for disaster recovery scenarios
-  - Metadata tracking tests
+#### Settings Panel
+- ✅ Server information display
+- ✅ Connection details
+- ✅ Performance metrics
+- ✅ Security status
+- ✅ Environment configuration guide
+- ✅ Python connection examples
 
-### Changed
-- **Dependencies updated**:
-  - Moved FastAPI, uvicorn, pydantic, duckdb from optional to required dependencies
-  - Added `snowflake-connector-python` as optional client dependency
-  - Added `tox>=4.0.0` to test dependencies
+### 🔧 Improvements
 
-- **Examples updated** - All examples now use standard `snowflake.connector` instead of custom client:
-  - `examples/basic_usage.py`
-  - `examples/etl_pipeline.py`
-  - `examples/testing_example.py`
+#### Backend
+- ✅ Enhanced server with dual-protocol support
+- ✅ Better error handling
+- ✅ Improved logging
+- ✅ Query execution endpoint for frontend
+- ✅ Health check enhancements
 
-- **Tests refactored** - All test files now use fixtures from conftest.py:
-  - Removed `setup_method` and `teardown_method` in favor of fixtures
-  - Tests are more focused and cleaner
-  - Better test isolation
+#### Docker
+- ✅ Auto-generation of SSL certificates in Dockerfile
+- ✅ Improved environment variable support
+- ✅ Better health checks
+- ✅ Volume management for certificates
+- ✅ Non-root user execution
 
-- **Metadata Store enhanced**:
-  - Added tracking for dropped objects
-  - Added methods for listing dropped objects with filtering
-  - Persistence includes dropped objects
+#### Documentation
+- ✅ Comprehensive README with HTTPS setup guide
+- ✅ Python connection examples
+- ✅ Docker configuration guide
+- ✅ SSL certificate management guide
+- ✅ Environment variables documentation
 
-- **Query Executor enhanced**:
-  - Added handlers for all new UNDROP operations
-  - Added handlers for TRUNCATE, ALTER TABLE RENAME, and CLONE operations
-  - Improved error messages
+#### Scripts
+- ✅ `quickstart.sh` - One-command setup and launch
+- ✅ `generate-certs.sh` - Interactive SSL certificate generation
+- ✅ Makefile with common commands
+- ✅ Example Python scripts
 
-### Fixed
-- Backward compatibility for metadata files without dropped section
+### 📦 New Dependencies
+- None (all dependencies remain the same)
 
-## Summary of Key Changes
+### 🐛 Bug Fixes
+- Fixed query history overflow
+- Improved session management
+- Better error messages
+- Fixed CSS rendering issues
 
-1. **No more custom client** - Use the standard `snowflake-connector-python` library
-2. **UNDROP support** - Recover accidentally dropped databases, schemas, tables, and views
-3. **Tox for testing** - Multi-environment testing support with Docker integration
-4. **Better test structure** - Shared fixtures in conftest.py for cleaner tests
-5. **More Snowflake operations** - TRUNCATE, RENAME, CLONE support
+---
+
+## [0.1.0] - 2024-01-XX - Initial Release
+
+### Features
+- ✅ Snowflake Python Connector compatibility
+- ✅ DuckDB backend
+- ✅ Basic SQL support (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP)
+- ✅ Database and schema management
+- ✅ Session management
+- ✅ Query execution and history
+- ✅ Web dashboard
+- ✅ Docker support
+- ✅ FastAPI server
+- ✅ Vue.js frontend
+
+### Components
+- FastAPI-based HTTP server
+- DuckDB for data storage
+- SQL query translator
+- Metadata management system
+- Basic web interface
+- Docker containerization
+
+---
+
+## Future Roadmap
+
+### v0.3.0 (Planned)
+- [ ] User authentication system
+- [ ] Role-based access control (RBAC)
+- [ ] Advanced SQL features (CTEs, window functions)
+- [ ] Stored procedures support
+- [ ] UDF (User-Defined Functions) support
+- [ ] Stage and file upload support
+- [ ] Data loading from S3
+- [ ] Query optimization
+- [ ] Multi-warehouse simulation
+
+### v0.4.0 (Planned)
+- [ ] Clustering and partitioning
+- [ ] Time travel and zero-copy cloning
+- [ ] Materialized views
+- [ ] Streams and tasks
+- [ ] External tables
+- [ ] Data sharing simulation
+- [ ] Advanced monitoring and metrics
+- [ ] Cost estimation
+
+### Community Requests
+- [ ] PostgreSQL backend option
+- [ ] SQLite backend option
+- [ ] Integration with dbt
+- [ ] Integration with Airflow
+- [ ] REST API for management
+- [ ] GraphQL support
+- [ ] WebSocket for real-time updates
+- [ ] Query profiling and explain plans
+
+---
+
+## Contributing
+
+We welcome contributions! Please see CONTRIBUTING.md for guidelines.
+
+## Version History
+
+- **0.2.0** - Enhanced edition with HTTPS, new UI, and SQL Worksheet
+- **0.1.0** - Initial release with basic Snowflake emulation
+
+---
+
+## Support
+
+For bug reports and feature requests, please open an issue on GitHub.

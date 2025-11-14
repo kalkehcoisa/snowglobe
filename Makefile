@@ -1,89 +1,121 @@
-.PHONY: help install install-dev install-server test lint format clean docker-build docker-up docker-down docker-logs
+.PHONY: help start stop restart logs build clean certs test frontend
 
+# Default target
 help:
-	@echo "Snowglobe - Local Snowflake Emulator"
+	@echo "❄️  Snowglobe - Local Snowflake Emulator"
+	@echo "========================================"
 	@echo ""
 	@echo "Available commands:"
-	@echo "  install         Install client package"
-	@echo "  install-dev     Install development dependencies"
-	@echo "  install-server  Install server dependencies"
-	@echo "  test            Run all tests"
-	@echo "  test-unit       Run unit tests only"
-	@echo "  test-integration Run integration tests"
-	@echo "  lint            Run code linting"
-	@echo "  format          Format code"
-	@echo "  clean           Clean build artifacts"
-	@echo "  docker-build    Build Docker image"
-	@echo "  docker-up       Start Docker container"
-	@echo "  docker-down     Stop Docker container"
-	@echo "  docker-logs     View container logs"
-	@echo "  server          Run server locally"
+	@echo "  make start      - Start Snowglobe (builds if needed)"
+	@echo "  make stop       - Stop Snowglobe"
+	@echo "  make restart    - Restart Snowglobe"
+	@echo "  make logs       - View server logs"
+	@echo "  make build      - Build Docker image"
+	@echo "  make clean      - Stop and remove containers/volumes"
+	@echo "  make certs      - Generate SSL certificates"
+	@echo "  make test       - Run tests"
+	@echo "  make frontend   - Build frontend"
+	@echo "  make quickstart - Quick start with all setup"
+	@echo ""
 
-install:
-	pip install -e .
+# Detect docker compose command
+DOCKER_COMPOSE := $(shell if command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
 
-install-dev:
-	pip install -e .[dev,test]
+# Start Snowglobe
+start:
+	@echo "🚀 Starting Snowglobe..."
+	@$(DOCKER_COMPOSE) up -d
+	@echo "✅ Snowglobe is running!"
+	@echo ""
+	@echo "🌐 Access the dashboard:"
+	@echo "   HTTPS: https://localhost:8443/dashboard"
+	@echo "   HTTP:  http://localhost:8084/dashboard"
 
-install-server:
-	pip install -e .[server]
+# Stop Snowglobe
+stop:
+	@echo "🛑 Stopping Snowglobe..."
+	@$(DOCKER_COMPOSE) down
+	@echo "✅ Snowglobe stopped"
 
-test:
-	pytest tests/ -v --cov=snowglobe_client --cov=snowglobe_server --cov-report=term-missing
+# Restart Snowglobe
+restart:
+	@echo "🔄 Restarting Snowglobe..."
+	@$(DOCKER_COMPOSE) restart
+	@echo "✅ Snowglobe restarted"
 
-test-unit:
-	pytest tests/ -v -m "not integration"
+# View logs
+logs:
+	@$(DOCKER_COMPOSE) logs -f
 
-test-integration:
-	pytest tests/ -v -m integration
+# Build Docker image
+build:
+	@echo "🔨 Building Snowglobe Docker image..."
+	@$(DOCKER_COMPOSE) build --no-cache
+	@echo "✅ Build complete"
 
-lint:
-	flake8 snowglobe_server/ snowglobe_client/ tests/ --max-line-length=100
-	mypy snowglobe_server/ snowglobe_client/ --ignore-missing-imports
-
-format:
-	black snowglobe_server/ snowglobe_client/ tests/ examples/ --line-length=100
-	isort snowglobe_server/ snowglobe_client/ tests/ examples/
-
+# Clean up everything
 clean:
-	rm -rf build/
-	rm -rf dist/
-	rm -rf *.egg-info/
-	rm -rf .pytest_cache/
-	rm -rf .mypy_cache/
-	rm -rf htmlcov/
-	rm -rf .coverage
-	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.pyo" -delete
-	find . -type f -name "*.duckdb" -delete
-	find . -type f -name "*.duckdb.wal" -delete
+	@echo "🧹 Cleaning up Snowglobe..."
+	@$(DOCKER_COMPOSE) down -v
+	@echo "✅ Cleanup complete"
 
-docker-build:
-	docker build -t snowglobe:latest .
+# Generate SSL certificates
+certs:
+	@echo "🔐 Generating SSL certificates..."
+	@./generate-certs.sh
 
-docker-up:
-	docker-compose up -d
+# Run tests
+test:
+	@echo "🧪 Running tests..."
+	@pytest tests/ -v
 
-docker-down:
-	docker-compose down
+# Build frontend
+frontend:
+	@echo "🎨 Building frontend..."
+	@cd frontend && npm install && npm run build
+	@echo "✅ Frontend built"
 
-docker-logs:
-	docker-compose logs -f
+# Quick start
+quickstart:
+	@./quickstart.sh
 
-docker-clean:
-	docker-compose down -v
-	docker rmi snowglobe:latest || true
+# Show status
+status:
+	@$(DOCKER_COMPOSE) ps
 
-server:
-	SNOWGLOBE_PORT=8084 SNOWGLOBE_DATA_DIR=./data SNOWGLOBE_LOG_LEVEL=DEBUG python -m snowglobe_server.server
+# Shell into container
+shell:
+	@$(DOCKER_COMPOSE) exec snowglobe /bin/bash
 
-# Development helpers
-dev-setup: install-dev install-server
-	@echo "Development environment setup complete!"
+# View health
+health:
+	@echo "🏥 Checking Snowglobe health..."
+	@curl -k -s https://localhost:8443/health | python3 -m json.tool || curl -s http://localhost:8084/health | python3 -m json.tool
 
-check: lint test
-	@echo "All checks passed!"
+# Install Python dependencies
+install:
+	@echo "📦 Installing Python dependencies..."
+	@pip install -r requirements-server.txt
+	@echo "✅ Dependencies installed"
 
-release-check: clean format lint test
-	@echo "Ready for release!"
+# Run locally (without Docker)
+run-local:
+	@echo "🏃 Running Snowglobe locally..."
+	@python -m snowglobe_server.server
+
+# Database backup
+backup:
+	@echo "💾 Creating backup..."
+	@mkdir -p backups
+	@$(DOCKER_COMPOSE) exec -T snowglobe tar -czf - /data > backups/snowglobe-backup-$$(date +%Y%m%d-%H%M%S).tar.gz
+	@echo "✅ Backup created in backups/"
+
+# Database restore
+restore:
+	@echo "📥 Restoring from backup..."
+	@if [ -z "$(BACKUP)" ]; then \
+		echo "❌ Please specify BACKUP file: make restore BACKUP=backups/file.tar.gz"; \
+		exit 1; \
+	fi
+	@cat $(BACKUP) | $(DOCKER_COMPOSE) exec -T snowglobe tar -xzf - -C /
+	@echo "✅ Backup restored"

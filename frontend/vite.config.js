@@ -13,7 +13,19 @@ export default defineConfig({
       '/health': {
         target: 'http://localhost:8084',
         changeOrigin: true
+      },
+      '/session': {
+        target: 'http://localhost:8084',
+        changeOrigin: true
+      },
+      '/queries': {
+        target: 'http://localhost:8084',
+        changeOrigin: true
       }
     }
+  },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets'
   }
 })
