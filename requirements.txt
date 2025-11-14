@@ -1,0 +1,3 @@
+# Snowglobe Dependencies
+# For client connectivity, use the standard snowflake-connector-python
+snowflake-connector-python>=3.0.0

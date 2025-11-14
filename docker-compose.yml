@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  snowglobe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: snowglobe
+    ports:
+      - "8084:8084"
+    volumes:
+      - snowglobe_data:/data
+    environment:
+      - SNOWGLOBE_PORT=8084
+      - SNOWGLOBE_DATA_DIR=/data
+      - SNOWGLOBE_LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - snowglobe_network
+
+volumes:
+  snowglobe_data:
+    driver: local
+
+networks:
+  snowglobe_network:
+    driver: bridge

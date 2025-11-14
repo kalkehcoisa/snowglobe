@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""
+Snowglobe CLI - Quick start utility
+"""
+
+import argparse
+import os
+import sys
+import subprocess
+
+
+def start_server(args):
+    """Start the Snowglobe server"""
+    env = os.environ.copy()
+    env["SNOWGLOBE_PORT"] = str(args.port)
+    env["SNOWGLOBE_DATA_DIR"] = args.data_dir
+    env["SNOWGLOBE_LOG_LEVEL"] = args.log_level
+    
+    print(f"Starting Snowglobe server on port {args.port}...")
+    print(f"Data directory: {args.data_dir}")
+    print(f"Log level: {args.log_level}")
+    
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "snowglobe_server.server"],
+            env=env,
+            check=True
+        )
+    except KeyboardInterrupt:
+        print("\nServer stopped.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Snowglobe - Local Snowflake Emulator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  snowglobe start                    # Start with defaults
+  snowglobe start --port 8085        # Start on custom port
+  snowglobe start --data-dir ./mydata  # Use custom data directory
+"""
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Start command
+    start_parser = subparsers.add_parser("start", help="Start Snowglobe server")
+    start_parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8084,
+        help="Port to run server on (default: 8084)"
+    )
+    start_parser.add_argument(
+        "--data-dir", "-d",
+        default="./data",
+        help="Data directory path (default: ./data)"
+    )
+    start_parser.add_argument(
+        "--log-level", "-l",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)"
+    )
+    
+    # Version command
+    subparsers.add_parser("version", help="Show version")
+    
+    args = parser.parse_args()
+    
+    if args.command == "start":
+        start_server(args)
+    elif args.command == "version":
+        print("Snowglobe v0.1.0")
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
