@@ -15,6 +15,14 @@ from snowglobe_server.metadata import MetadataStore
 from snowglobe_server.query_executor import QueryExecutor
 from snowglobe_server.sql_translator import SnowflakeToDuckDBTranslator
 
+# Import FastAPI test client if available
+try:
+    from fastapi.testclient import TestClient
+    from snowglobe_server.server import app
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+
 
 @pytest.fixture
 def temp_dir():
@@ -181,3 +189,22 @@ def dropped_objects(metadata_store):
     metadata_store.drop_view("SNOWGLOBE", "PUBLIC", "DROPPED_VIEW")
     
     return metadata_store
+
+
+@pytest.fixture
+def test_client():
+    """Create a test client for FastAPI app"""
+    if not FASTAPI_AVAILABLE:
+        pytest.skip("FastAPI test client not available")
+    
+    # Clear any existing sessions before tests
+    from snowglobe_server.server import sessions, query_history
+    sessions.clear()
+    query_history.clear()
+    
+    with TestClient(app) as client:
+        yield client
+    
+    # Clean up after tests
+    sessions.clear()
+    query_history.clear()

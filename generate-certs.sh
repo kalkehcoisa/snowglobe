@@ -58,14 +58,49 @@ echo ""
 echo "🔨 Generating SSL certificate..."
 echo ""
 
-# Generate certificate
+# Create OpenSSL config for better certificate generation
+cat > "$CERT_DIR/openssl.cnf" << EOF
+[req]
+default_bits = 4096
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+C=$COUNTRY
+ST=$STATE
+L=$CITY
+O=$ORG
+CN=$CN
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+extendedKeyUsage = serverAuth, clientAuth
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = snowglobe
+DNS.3 = $CN
+DNS.4 = *.localhost
+IP.1 = 127.0.0.1
+IP.2 = 0.0.0.0
+IP.3 = ::1
+EOF
+
+# Generate certificate with config file
 openssl req -x509 -newkey rsa:4096 -nodes \
     -out "$CERT_FILE" \
     -keyout "$KEY_FILE" \
     -days "$CERT_DAYS" \
-    -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CN" \
-    -addext "subjectAltName=DNS:localhost,DNS:snowglobe,DNS:$CN,IP:127.0.0.1,IP:0.0.0.0" \
+    -config "$CERT_DIR/openssl.cnf" \
+    -extensions v3_req \
     2>/dev/null
+
+# Clean up config file
+rm -f "$CERT_DIR/openssl.cnf"
 
 # Set permissions
 chmod 644 "$CERT_FILE"

@@ -19,20 +19,28 @@
 
     <div class="app-container">
       <!-- Side Navigation Menu -->
-      <aside class="sidebar">
+      <aside :class="['sidebar', { collapsed: sidebarCollapsed }]">
+        <div class="sidebar-header">
+          <button class="collapse-btn" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
+            <span v-if="!sidebarCollapsed">◀</span>
+            <span v-else>▶</span>
+          </button>
+        </div>
+        
         <nav class="sidebar-nav">
           <button 
             v-for="item in navItems" 
             :key="item.id"
             :class="['nav-item', { active: activeView === item.id }]"
             @click="activeView = item.id"
+            :title="sidebarCollapsed ? item.label : ''"
           >
             <span class="nav-icon">{{ item.icon }}</span>
-            <span class="nav-label">{{ item.label }}</span>
+            <span v-if="!sidebarCollapsed" class="nav-label">{{ item.label }}</span>
           </button>
         </nav>
 
-        <div class="sidebar-footer">
+        <div v-if="!sidebarCollapsed" class="sidebar-footer">
           <div class="connection-info">
             <div class="info-label">Active Sessions</div>
             <div class="info-value">{{ stats.active_sessions || 0 }}</div>
@@ -42,6 +50,12 @@
             <div class="info-value">{{ stats.total_queries || 0 }}</div>
           </div>
           <button class="refresh-btn" @click="fetchAll" title="Refresh">
+            <span :class="{ 'rotating': isRefreshing }">🔄</span>
+          </button>
+        </div>
+        
+        <div v-else class="sidebar-footer-compact">
+          <button class="refresh-btn-compact" @click="fetchAll" title="Refresh">
             <span :class="{ 'rotating': isRefreshing }">🔄</span>
           </button>
         </div>
@@ -134,6 +148,7 @@ export default {
   data() {
     return {
       activeView: 'worksheet',
+      sidebarCollapsed: false,
       navItems: [
         { id: 'worksheet', label: 'Worksheet', icon: '📝' },
         { id: 'overview', label: 'Overview', icon: '📊' },
@@ -343,6 +358,34 @@ export default {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  transition: width 0.3s ease;
+}
+
+.sidebar.collapsed {
+  width: 64px;
+}
+
+.sidebar-header {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.collapse-btn {
+  padding: 0.5rem;
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+}
+
+.collapse-btn:hover {
+  background: var(--bg-color);
+  color: var(--text-color);
 }
 
 .sidebar-nav {
@@ -386,6 +429,47 @@ export default {
 
 .nav-label {
   flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  padding: 0.75rem 0.5rem;
+}
+
+.sidebar.collapsed .nav-icon {
+  margin: 0;
+}
+
+.sidebar-footer-compact {
+  padding: 0.5rem;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-color);
+  display: flex;
+  justify-content: center;
+}
+
+.refresh-btn-compact {
+  padding: 0.5rem;
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.refresh-btn-compact:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
 }
 
 .sidebar-footer {

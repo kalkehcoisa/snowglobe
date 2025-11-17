@@ -912,6 +912,7 @@ def get_dashboard_html():
 def main():
     """Run the server"""
     import uvicorn
+    import ssl
     
     port = int(os.getenv("SNOWGLOBE_PORT", "8084"))
     https_port = int(os.getenv("SNOWGLOBE_HTTPS_PORT", "8443"))
@@ -926,6 +927,29 @@ def main():
         logger.info(f"Starting Snowglobe server with HTTPS on {host}:{https_port}")
         logger.info(f"SSL Certificate: {cert_path}")
         logger.info(f"Also serving HTTP on {host}:{port}")
+        
+        # Verify certificates are readable
+        try:
+            with open(cert_path, 'r') as f:
+                cert_content = f.read()
+                if not cert_content or 'BEGIN CERTIFICATE' not in cert_content:
+                    raise ValueError("Invalid certificate file")
+            with open(key_path, 'r') as f:
+                key_content = f.read()
+                if not key_content or 'BEGIN PRIVATE KEY' not in key_content:
+                    raise ValueError("Invalid key file")
+            logger.info("SSL certificates validated successfully")
+        except Exception as e:
+            logger.error(f"SSL certificate validation failed: {e}")
+            logger.info(f"Falling back to HTTP only on {host}:{port}")
+            uvicorn.run(
+                "snowglobe_server.server:app",
+                host=host,
+                port=port,
+                log_level="info",
+                reload=False
+            )
+            return
         
         # Start HTTPS server in main thread
         import threading
@@ -943,7 +967,24 @@ def main():
         http_thread = threading.Thread(target=run_http, daemon=True)
         http_thread.start()
         
-        # Run HTTPS server in main thread
+        # Create SSL context with proper settings
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(cert_path, key_path)
+        
+        # Configure SSL context for better compatibility
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Enable TLS 1.2 and 1.3
+        ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
+        
+        # Set ciphers for better compatibility
+        ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+        
+        logger.info("SSL context configured with TLS 1.2+ and secure ciphers")
+        
+        # Run HTTPS server in main thread with custom SSL context
         uvicorn.run(
             "snowglobe_server.server:app",
             host=host,
@@ -952,8 +993,10 @@ def main():
             reload=False,
             ssl_keyfile=key_path,
             ssl_certfile=cert_path,
-            ssl_version=3,  # TLS 1.2+
-            ssl_cert_reqs=0,  # Don't require client certificates
+            ssl_keyfile_password=None,
+            ssl_version=ssl.PROTOCOL_TLS_SERVER,
+            ssl_cert_reqs=ssl.CERT_NONE,
+            ssl_ca_certs=None,
         )
     else:
         logger.info(f"Starting Snowglobe server on {host}:{port} (HTTP only)")

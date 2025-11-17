@@ -36,12 +36,43 @@ COPY snowglobe_server/ ./snowglobe_server/
 RUN mkdir -p /data /app/certs && chmod 777 /data /app/certs
 
 # Generate self-signed SSL certificate (for local development)
-RUN openssl req -x509 -newkey rsa:4096 -nodes \
+RUN cat > /tmp/openssl.cnf << EOF && \
+    openssl req -x509 -newkey rsa:4096 -nodes \
     -out /app/certs/cert.pem \
     -keyout /app/certs/key.pem \
     -days 365 \
-    -subj "/C=US/ST=CA/L=SanFrancisco/O=Snowglobe/OU=Dev/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,DNS:snowglobe,IP:127.0.0.1"
+    -config /tmp/openssl.cnf \
+    -extensions v3_req && \
+    rm /tmp/openssl.cnf
+[req]
+default_bits = 4096
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+C=US
+ST=CA
+L=San Francisco
+O=Snowglobe
+OU=Development
+CN=localhost
+
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+extendedKeyUsage = serverAuth, clientAuth
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = snowglobe
+DNS.3 = *.localhost
+IP.1 = 127.0.0.1
+IP.2 = 0.0.0.0
+IP.3 = ::1
+EOF
 
 # Create non-root user
 RUN useradd -m -u 1000 snowglobe && \
