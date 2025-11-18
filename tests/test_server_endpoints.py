@@ -185,7 +185,7 @@ class TestDatabasesEndpoint:
         if len(data["databases"]) > 0:
             db = data["databases"][0]
             assert "name" in db
-            assert "created_on" in db
+            assert "created_at" in db
 
 
 class TestQueryExecution:
@@ -238,7 +238,7 @@ class TestQueryExecution:
         client = test_client
         """Test creating a table"""
         query_data = {
-            "sql": "CREATE TABLE test_table (id INT, name VARCHAR)"
+            "sql": "CREATE TABLE IF NOT EXISTS test_table_new (id INT, name VARCHAR)"
         }
         
         response = client.post("/api/execute", json=query_data)

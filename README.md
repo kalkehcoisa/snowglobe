@@ -307,18 +307,28 @@ volumes:
 
 ### Frontend Development
 
+The Vue frontend is served by the backend at `/dashboard`. The frontend must be built and deployed to `snowglobe_server/static/` before it can be used.
+
+```bash
+# Build and deploy frontend (recommended)
+make frontend
+
+# Or manually:
+cd frontend
+npm install
+npm run build
+cd ..
+cp -r frontend/dist snowglobe_server/static
+```
+
+For development with hot-reload:
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Run development server
-npm run dev
-
-# Build for production
-npm run build
+npm run dev   # Runs on http://localhost:3000 with API proxy to backend
 ```
+
+> **Note:** When building the Docker image, the frontend is automatically built and included. The `make frontend` command is only needed for local development without Docker.
 
 ### Backend Development
 

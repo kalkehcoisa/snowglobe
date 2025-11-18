@@ -13,10 +13,24 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from pathlib import Path
 
 from .query_executor import QueryExecutor
+from .decorators import (
+    handle_exceptions,
+    log_execution_time,
+    create_success_response,
+    create_error_response,
+    get_session_from_token,
+    calculate_duration_ms,
+    get_statement_type_id,
+    QueryHistoryManager,
+    SessionManager
+)
+from .template_loader import load_template
 
 # Configure logging
 logging.basicConfig(
@@ -26,12 +40,11 @@ logging.basicConfig(
 logger = logging.getLogger("snowglobe")
 
 # Global state
-sessions: Dict[str, Dict[str, Any]] = {}  # session_token -> session info
 data_dir = os.getenv("SNOWGLOBE_DATA_DIR", "/data")
 
-# Query history for the frontend
-query_history: List[Dict[str, Any]] = []
-MAX_QUERY_HISTORY = 1000
+# Use new managers for better organization
+session_manager = SessionManager()
+query_history_manager = QueryHistoryManager(max_size=1000)
 
 
 @asynccontextmanager
@@ -41,13 +54,8 @@ async def lifespan(app: FastAPI):
     os.makedirs(data_dir, exist_ok=True)
     yield
     logger.info("Snowglobe server shutting down...")
-    # Clean up sessions
-    for session_token, session_info in sessions.items():
-        try:
-            session_info["executor"].close()
-        except Exception:
-            pass
-    sessions.clear()
+    # Clean up sessions using session manager
+    session_manager.cleanup_all()
 
 
 # Create FastAPI app
@@ -67,6 +75,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files for Vue frontend assets
+# This needs to be done after app creation
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists() and (_static_dir / "assets").exists():
+    app.mount("/dashboard/assets", StaticFiles(directory=_static_dir / "assets"), name="dashboard_assets")
+
 
 # Store server start time
 server_start_time = datetime.utcnow()
@@ -77,41 +91,8 @@ def generate_token():
     return str(uuid.uuid4()).replace("-", "") + str(uuid.uuid4()).replace("-", "")
 
 
-def get_session_from_token(auth_header: str) -> Optional[Dict[str, Any]]:
-    """Extract session from Authorization header"""
-    if not auth_header:
-        return None
-    
-    # Format: Snowflake Token="<token>"
-    if auth_header.startswith('Snowflake Token="') and auth_header.endswith('"'):
-        token = auth_header[17:-1]
-        return sessions.get(token)
-    
-    return None
-
-
-def add_query_to_history(query: str, session_id: str, success: bool, 
-                          duration_ms: float, rows_affected: int, 
-                          error: Optional[str] = None):
-    """Add query to history for frontend viewing"""
-    global query_history
-    
-    entry = {
-        "id": str(uuid.uuid4()),
-        "timestamp": datetime.utcnow().isoformat(),
-        "session_id": session_id,
-        "query": query,
-        "success": success,
-        "duration_ms": duration_ms,
-        "rows_affected": rows_affected,
-        "error": error
-    }
-    
-    query_history.append(entry)
-    
-    # Keep only last N queries
-    if len(query_history) > MAX_QUERY_HISTORY:
-        query_history = query_history[-MAX_QUERY_HISTORY:]
+# Removed: get_session_from_token - now imported from decorators
+# Removed: add_query_to_history - now using QueryHistoryManager
 
 
 # ========== Snowflake-Compatible API Endpoints ==========
@@ -134,6 +115,7 @@ async def get_request_body(request: Request) -> dict:
 
 
 @app.post("/session/v1/login-request")
+@handle_exceptions
 async def login_request(request: Request):
     """
     Snowflake-compatible login endpoint.
@@ -190,8 +172,8 @@ async def login_request(request: Request):
         # Ensure DuckDB schema exists
         executor._ensure_schema_exists(executor.current_database, executor.current_schema)
         
-        # Store session
-        sessions[session_token] = {
+        # Store session using session manager
+        session_manager.add(session_token, {
             "executor": executor,
             "session_id": session_id,
             "user": login_name,
@@ -202,7 +184,7 @@ async def login_request(request: Request):
             "schema": executor.current_schema,
             "warehouse": executor.current_warehouse,
             "role": executor.current_role
-        }
+        })
         
         logger.info(f"Session created: {session_id}, token: {session_token[:8]}...")
         
@@ -269,10 +251,11 @@ async def login_request(request: Request):
 
 
 @app.post("/session/v1/login-request:renew")
+@handle_exceptions
 async def renew_session(request: Request):
     """Renew session token"""
     auth_header = request.headers.get("Authorization", "")
-    session = get_session_from_token(auth_header)
+    session = get_session_from_token(auth_header, session_manager.sessions)
     
     if not session:
         return {
@@ -286,10 +269,10 @@ async def renew_session(request: Request):
     new_token = generate_token()
     
     # Move session to new token
-    for old_token, sess in list(sessions.items()):
+    for old_token, sess in list(session_manager.sessions.items()):
         if sess["session_id"] == session["session_id"]:
-            sessions[new_token] = sess
-            del sessions[old_token]
+            session_manager.add(new_token, sess)
+            session_manager.remove(old_token)
             break
     
     return {
@@ -304,34 +287,22 @@ async def renew_session(request: Request):
 
 
 @app.post("/session")
+@handle_exceptions
 async def delete_session(request: Request):
     """Close/delete session"""
     auth_header = request.headers.get("Authorization", "")
     
-    for token, session in list(sessions.items()):
+    for token, session in list(session_manager.sessions.items()):
         if auth_header.endswith(f'"{token}"'):
-            try:
-                session["executor"].close()
-            except Exception:
-                pass
-            del sessions[token]
+            session_manager.remove(token)
             logger.info(f"Session closed: {session['session_id']}")
-            return {
-                "data": None,
-                "code": None,
-                "message": None,
-                "success": True
-            }
+            return create_success_response()
     
-    return {
-        "data": None,
-        "code": None,
-        "message": None,
-        "success": True
-    }
+    return create_success_response()
 
 
 @app.post("/queries/v1/query-request")
+@handle_exceptions
 async def query_request(request: Request):
     """
     Snowflake-compatible query execution endpoint.
@@ -340,7 +311,7 @@ async def query_request(request: Request):
     start_time = datetime.utcnow()
     
     auth_header = request.headers.get("Authorization", "")
-    session = get_session_from_token(auth_header)
+    session = get_session_from_token(auth_header, session_manager.sessions)
     
     if not session:
         return {
@@ -367,7 +338,7 @@ async def query_request(request: Request):
         
         # Calculate duration
         end_time = datetime.utcnow()
-        duration_ms = (end_time - start_time).total_seconds() * 1000
+        duration_ms = calculate_duration_ms(start_time, end_time)
         
         if result["success"]:
             # Map column types to Snowflake types
@@ -393,27 +364,11 @@ async def query_request(request: Request):
                 # Convert each value to string (Snowflake JSON format)
                 rowset.append([str(v) if v is not None else None for v in row])
             
-            # Determine statement type
-            sql_upper = sql_text.strip().upper()
-            if sql_upper.startswith("SELECT") or sql_upper.startswith("SHOW") or sql_upper.startswith("DESCRIBE"):
-                statement_type_id = 4096  # SELECT
-            elif sql_upper.startswith("INSERT"):
-                statement_type_id = 4608  # INSERT
-            elif sql_upper.startswith("UPDATE"):
-                statement_type_id = 4864  # UPDATE
-            elif sql_upper.startswith("DELETE"):
-                statement_type_id = 5120  # DELETE
-            elif sql_upper.startswith("CREATE"):
-                statement_type_id = 8192  # DDL
-            elif sql_upper.startswith("DROP"):
-                statement_type_id = 8192  # DDL
-            elif sql_upper.startswith("ALTER"):
-                statement_type_id = 8192  # DDL
-            else:
-                statement_type_id = 0  # Unknown
+            # Determine statement type using helper function
+            statement_type_id = get_statement_type_id(sql_text)
             
             # Add to query history
-            add_query_to_history(
+            query_history_manager.add(
                 sql_text,
                 session["session_id"],
                 True,
@@ -458,7 +413,7 @@ async def query_request(request: Request):
             # Query failed
             error_msg = result.get("error", "Unknown error")
             
-            add_query_to_history(
+            query_history_manager.add(
                 sql_text,
                 session["session_id"],
                 False,
@@ -481,9 +436,9 @@ async def query_request(request: Request):
         logger.error(f"Query execution error: {str(e)}", exc_info=True)
         
         end_time = datetime.utcnow()
-        duration_ms = (end_time - start_time).total_seconds() * 1000
+        duration_ms = calculate_duration_ms(start_time, end_time)
         
-        add_query_to_history(
+        query_history_manager.add(
             sql_text if 'sql_text' in locals() else "Unknown",
             session["session_id"],
             False,
@@ -504,20 +459,17 @@ async def query_request(request: Request):
 
 
 @app.post("/queries/v1/abort-request")
+@handle_exceptions
 async def abort_request(request: Request):
     """Abort a running query"""
     # For now, just return success
-    return {
-        "data": None,
-        "code": None,
-        "message": None,
-        "success": True
-    }
+    return create_success_response()
 
 
 # ========== Health Check and Info Endpoints ==========
 
 @app.get("/health")
+@handle_exceptions
 async def health_check():
     """Health check endpoint"""
     uptime = datetime.utcnow() - server_start_time
@@ -525,125 +477,107 @@ async def health_check():
         "status": "healthy",
         "version": "0.1.0",
         "uptime": str(uptime),
-        "active_sessions": len(sessions),
-        "queries_executed": len(query_history)
+        "active_sessions": session_manager.count(),
+        "queries_executed": len(query_history_manager.history)
     }
 
 
 # ========== Frontend API Endpoints ==========
 
 @app.get("/api/sessions")
+@handle_exceptions
 async def list_sessions():
     """List all active sessions (for frontend)"""
-    session_list = []
-    for token, session in sessions.items():
-        session_list.append({
-            "session_id": session["session_id"],
-            "user": session["user"],
-            "database": session["database"],
-            "schema": session["schema"],
-            "warehouse": session["warehouse"],
-            "role": session["role"],
-            "created_at": session["created_at"].isoformat(),
-            "token_prefix": token[:8] + "..."
-        })
-    return {"sessions": session_list}
+    return {"sessions": session_manager.list_all()}
 
 
 @app.get("/api/queries")
+@handle_exceptions
 async def list_queries(limit: int = 100, offset: int = 0):
     """List query history (for frontend)"""
-    # Return queries in reverse chronological order
-    sorted_queries = list(reversed(query_history))
     return {
-        "queries": sorted_queries[offset:offset + limit],
-        "total": len(query_history)
+        "queries": query_history_manager.get_recent(limit, offset),
+        "total": len(query_history_manager.history)
     }
 
 
 @app.get("/api/databases")
+@handle_exceptions
 async def api_list_databases():
     """List all databases (for frontend)"""
-    if not sessions:
+    if session_manager.count() == 0:
         # Create a temporary executor for metadata access
         executor = QueryExecutor(data_dir)
         databases = executor.metadata.list_databases()
         executor.close()
     else:
         # Use first available session
-        first_session = next(iter(sessions.values()))
+        first_session = next(iter(session_manager.sessions.values()))
         databases = first_session["executor"].metadata.list_databases()
     
     return {"databases": databases}
 
 
 @app.get("/api/databases/{database}/schemas")
+@handle_exceptions
 async def api_list_schemas(database: str):
     """List schemas in a database (for frontend)"""
-    if not sessions:
+    if session_manager.count() == 0:
         executor = QueryExecutor(data_dir)
         try:
             schemas = executor.metadata.list_schemas(database.upper())
         finally:
             executor.close()
     else:
-        first_session = next(iter(sessions.values()))
+        first_session = next(iter(session_manager.sessions.values()))
         schemas = first_session["executor"].metadata.list_schemas(database.upper())
     
     return {"schemas": schemas}
 
 
 @app.get("/api/databases/{database}/schemas/{schema_name}/tables")
+@handle_exceptions
 async def api_list_tables(database: str, schema_name: str):
     """List tables in a schema (for frontend)"""
-    if not sessions:
+    if session_manager.count() == 0:
         executor = QueryExecutor(data_dir)
         try:
             tables = executor.metadata.list_tables(database.upper(), schema_name.upper())
         finally:
             executor.close()
     else:
-        first_session = next(iter(sessions.values()))
+        first_session = next(iter(session_manager.sessions.values()))
         tables = first_session["executor"].metadata.list_tables(database.upper(), schema_name.upper())
     
     return {"tables": tables}
 
 
 @app.get("/api/stats")
+@handle_exceptions
 async def get_stats():
     """Get server statistics (for frontend)"""
     uptime = datetime.utcnow() - server_start_time
-    
-    # Calculate query statistics
-    total_queries = len(query_history)
-    successful_queries = sum(1 for q in query_history if q["success"])
-    failed_queries = total_queries - successful_queries
-    
-    avg_duration = 0
-    if total_queries > 0:
-        avg_duration = sum(q["duration_ms"] for q in query_history) / total_queries
+    stats = query_history_manager.get_stats()
     
     return {
         "uptime_seconds": uptime.total_seconds(),
         "uptime_formatted": str(uptime),
-        "active_sessions": len(sessions),
-        "total_queries": total_queries,
-        "successful_queries": successful_queries,
-        "failed_queries": failed_queries,
-        "average_query_duration_ms": round(avg_duration, 2),
+        "active_sessions": session_manager.count(),
+        **stats,
         "server_start_time": server_start_time.isoformat()
     }
 
 
 @app.delete("/api/queries/history")
+@handle_exceptions
 async def clear_query_history():
     """Clear query history (for frontend)"""
-    global query_history
-    query_history = []
+    query_history_manager.clear()
     return {"success": True, "message": "Query history cleared"}
 
 
 @app.post("/api/execute")
+@handle_exceptions
 async def execute_query(request: Request):
     """Execute a query from the frontend worksheet"""
     try:
@@ -654,8 +588,8 @@ async def execute_query(request: Request):
             return {"success": False, "error": "No SQL provided"}
         
         # Create a temporary session if none exists, or use first available
-        if sessions:
-            first_session = next(iter(sessions.values()))
+        if session_manager.count() > 0:
+            first_session = next(iter(session_manager.sessions.values()))
             executor = first_session["executor"]
             session_id = first_session["session_id"]
         else:
@@ -667,10 +601,10 @@ async def execute_query(request: Request):
         start_time = datetime.utcnow()
         result = executor.execute(sql)
         end_time = datetime.utcnow()
-        duration_ms = (end_time - start_time).total_seconds() * 1000
+        duration_ms = calculate_duration_ms(start_time, end_time)
         
         # Add to history
-        add_query_to_history(
+        query_history_manager.add(
             sql,
             session_id,
             result["success"],
@@ -699,15 +633,261 @@ async def execute_query(request: Request):
         return {"success": False, "error": str(e)}
 
 
+# ========== Worksheet Management Endpoints ==========
+
+# In-memory worksheet storage (persists for server lifetime)
+_worksheets_store: Dict[str, Dict[str, Any]] = {}
+_worksheet_counter = 0
+
+class WorksheetCreate(BaseModel):
+    name: str
+    sql: str = ""
+    context: Optional[Dict[str, str]] = None
+
+class WorksheetUpdate(BaseModel):
+    name: Optional[str] = None
+    sql: Optional[str] = None
+    context: Optional[Dict[str, str]] = None
+
+
+@app.get("/api/worksheets")
+@handle_exceptions
+async def list_worksheets():
+    """List all worksheets"""
+    worksheets = list(_worksheets_store.values())
+    # Sort by created_at descending (most recent first)
+    worksheets.sort(key=lambda x: x.get("updated_at", x.get("created_at", "")), reverse=True)
+    return {"worksheets": worksheets, "count": len(worksheets)}
+
+
+@app.post("/api/worksheets")
+@handle_exceptions
+async def create_worksheet(worksheet: WorksheetCreate):
+    """Create a new worksheet"""
+    global _worksheet_counter
+    _worksheet_counter += 1
+    
+    worksheet_id = f"ws_{_worksheet_counter}_{uuid.uuid4().hex[:8]}"
+    now = datetime.utcnow().isoformat()
+    
+    new_worksheet = {
+        "id": worksheet_id,
+        "name": worksheet.name or f"Worksheet {_worksheet_counter}",
+        "sql": worksheet.sql or "",
+        "context": worksheet.context or {
+            "database": "SNOWGLOBE",
+            "schema": "PUBLIC",
+            "warehouse": "COMPUTE_WH",
+            "role": "ACCOUNTADMIN"
+        },
+        "created_at": now,
+        "updated_at": now,
+        "last_executed": None
+    }
+    
+    _worksheets_store[worksheet_id] = new_worksheet
+    logger.info(f"Created worksheet: {worksheet_id}")
+    return {"success": True, "worksheet": new_worksheet}
+
+
+@app.get("/api/worksheets/{worksheet_id}")
+@handle_exceptions
+async def get_worksheet(worksheet_id: str):
+    """Get a specific worksheet"""
+    if worksheet_id not in _worksheets_store:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    return {"worksheet": _worksheets_store[worksheet_id]}
+
+
+@app.put("/api/worksheets/{worksheet_id}")
+@handle_exceptions
+async def update_worksheet(worksheet_id: str, worksheet: WorksheetUpdate):
+    """Update a worksheet"""
+    if worksheet_id not in _worksheets_store:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    stored = _worksheets_store[worksheet_id]
+    
+    if worksheet.name is not None:
+        stored["name"] = worksheet.name
+    if worksheet.sql is not None:
+        stored["sql"] = worksheet.sql
+    if worksheet.context is not None:
+        stored["context"] = worksheet.context
+    
+    stored["updated_at"] = datetime.utcnow().isoformat()
+    
+    logger.info(f"Updated worksheet: {worksheet_id}")
+    return {"success": True, "worksheet": stored}
+
+
+@app.delete("/api/worksheets/{worksheet_id}")
+@handle_exceptions
+async def delete_worksheet(worksheet_id: str):
+    """Delete a worksheet"""
+    if worksheet_id not in _worksheets_store:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    del _worksheets_store[worksheet_id]
+    logger.info(f"Deleted worksheet: {worksheet_id}")
+    return {"success": True, "message": f"Worksheet {worksheet_id} deleted"}
+
+
+@app.post("/api/worksheets/{worksheet_id}/execute")
+@handle_exceptions
+async def execute_worksheet(worksheet_id: str, request: Request):
+    """Execute the SQL in a worksheet and save results"""
+    if worksheet_id not in _worksheets_store:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    worksheet = _worksheets_store[worksheet_id]
+    sql = worksheet.get("sql", "").strip()
+    
+    if not sql:
+        return {"success": False, "error": "No SQL in worksheet"}
+    
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+        session_id = first_session["session_id"]
+    else:
+        executor = QueryExecutor(data_dir)
+        session_id = "frontend-temp"
+    
+    # Execute query
+    start_time = datetime.utcnow()
+    result = executor.execute(sql)
+    end_time = datetime.utcnow()
+    duration_ms = calculate_duration_ms(start_time, end_time)
+    
+    # Add to history
+    query_history_manager.add(
+        sql,
+        session_id,
+        result["success"],
+        duration_ms,
+        result["rowcount"],
+        result.get("error")
+    )
+    
+    # Update worksheet last_executed
+    worksheet["last_executed"] = datetime.utcnow().isoformat()
+    worksheet["updated_at"] = worksheet["last_executed"]
+    
+    if result["success"]:
+        return {
+            "success": True,
+            "columns": result["columns"],
+            "data": result["data"],
+            "rowcount": result["rowcount"],
+            "duration_ms": duration_ms
+        }
+    else:
+        return {
+            "success": False,
+            "error": result.get("error", "Unknown error"),
+            "duration_ms": duration_ms
+        }
+
+
+# ========== Server Logs Endpoints ==========
+
+# In-memory log buffer
+_log_buffer: List[Dict[str, Any]] = []
+_max_log_entries = 500
+
+class LogCapture(logging.Handler):
+    """Custom handler to capture logs for the frontend"""
+    def emit(self, record):
+        try:
+            log_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": self.format(record),
+                "module": record.module,
+                "function": record.funcName,
+                "line": record.lineno
+            }
+            _log_buffer.append(log_entry)
+            # Keep buffer size limited
+            if len(_log_buffer) > _max_log_entries:
+                _log_buffer.pop(0)
+        except Exception:
+            pass
+
+# Add custom handler to capture logs
+log_capture_handler = LogCapture()
+log_capture_handler.setFormatter(logging.Formatter('%(message)s'))
+logging.getLogger().addHandler(log_capture_handler)
+
+
+@app.get("/api/logs")
+@handle_exceptions
+async def get_logs(limit: int = 100, level: Optional[str] = None):
+    """Get server logs"""
+    logs = _log_buffer.copy()
+    
+    # Filter by level if specified
+    if level:
+        level_upper = level.upper()
+        logs = [log for log in logs if log["level"] == level_upper]
+    
+    # Return most recent logs first, limited
+    logs = logs[-limit:]
+    logs.reverse()
+    
+    return {
+        "logs": logs,
+        "count": len(logs),
+        "total": len(_log_buffer)
+    }
+
+
+@app.delete("/api/logs")
+@handle_exceptions
+async def clear_logs():
+    """Clear the log buffer"""
+    _log_buffer.clear()
+    logger.info("Log buffer cleared")
+    return {"success": True, "message": "Logs cleared"}
+
+
+# Static files directory for Vue frontend
+STATIC_DIR = Path(__file__).parent / "static"
+
 @app.get("/dashboard", response_class=HTMLResponse)
+@handle_exceptions
 async def dashboard():
-    """Serve embedded dashboard HTML"""
-    return get_dashboard_html()
+    """Serve Vue frontend dashboard"""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    # Fallback to old template if frontend not built
+    return load_template("dashboard.html")
+
+@app.get("/dashboard/{path:path}")
+async def dashboard_static(path: str):
+    """Serve static assets for Vue frontend"""
+    file_path = STATIC_DIR / path
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+    # For SPA routing, return index.html
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    raise HTTPException(status_code=404, detail="Not found")
 
 
+# Legacy function for backward compatibility
 def get_dashboard_html():
-    """Return the embedded dashboard HTML"""
-    return '''<!DOCTYPE html>
+    """Return the dashboard HTML (deprecated - use load_template instead)"""
+    return load_template("dashboard.html")
+
+
+# Old embedded HTML removed - now loaded from templates/dashboard.html
+_LEGACY_DASHBOARD_HTML = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">

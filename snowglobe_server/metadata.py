@@ -71,6 +71,9 @@ class MetadataStore:
     def create_database(self, name: str, if_not_exists: bool = False) -> bool:
         """Create a new database"""
         with self._lock:
+            if not name or not name.strip():
+                raise ValueError("Database name cannot be empty")
+            
             name = name.upper()
             if name in self._metadata["databases"]:
                 if if_not_exists:
@@ -365,6 +368,27 @@ class MetadataStore:
                 for name, table in self._metadata["databases"][database]["schemas"][schema]["tables"].items()
             ]
     
+    def list_views(self, database: str, schema: str) -> List[Dict]:
+        """List all views in a schema"""
+        with self._lock:
+            database = database.upper()
+            schema = schema.upper()
+            
+            if database not in self._metadata["databases"]:
+                raise ValueError(f"Database '{database}' does not exist")
+            
+            if schema not in self._metadata["databases"][database]["schemas"]:
+                raise ValueError(f"Schema '{schema}' does not exist")
+            
+            return [
+                {
+                    "name": name,
+                    "created_at": view["created_at"],
+                    "definition": view.get("definition", "")
+                }
+                for name, view in self._metadata["databases"][database]["schemas"][schema]["views"].items()
+            ]
+    
     def table_exists(self, database: str, schema: str, table: str) -> bool:
         """Check if table exists"""
         with self._lock:
@@ -538,6 +562,24 @@ class MetadataStore:
                 {"name": name, "dropped_at": db["dropped_at"]}
                 for name, db in self._metadata["dropped"]["databases"].items()
             ]
+    
+    def list_dropped_views(self, database: str = None, schema: str = None) -> List[Dict]:
+        """List all dropped views"""
+        with self._lock:
+            result = []
+            for key, view in self._metadata["dropped"]["views"].items():
+                parts = key.split(".")
+                if len(parts) == 3:
+                    db, sch, name = parts
+                    if (database is None or db == database.upper()) and \
+                       (schema is None or sch == schema.upper()):
+                        result.append({
+                            "name": name,
+                            "database": db,
+                            "schema": sch,
+                            "dropped_at": view["dropped_at"]
+                        })
+            return result
     
     def get_full_table_name(self, database: str, schema: str, table: str) -> str:
         """Get fully qualified table name"""

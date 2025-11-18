@@ -1,4 +1,15 @@
 # Snowglobe - Local Snowflake Emulator with SSL/TLS Support
+
+# Stage 1: Build the Vue frontend
+FROM node:18-slim AS frontend-builder
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Build the final image
 FROM python:3.11-slim
 
 # Set environment variables
@@ -31,6 +42,9 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 
 # Copy server code
 COPY snowglobe_server/ ./snowglobe_server/
+
+# Copy built frontend from the builder stage
+COPY --from=frontend-builder /frontend/dist ./snowglobe_server/static/
 
 # Create directories
 RUN mkdir -p /data /app/certs && chmod 777 /data /app/certs

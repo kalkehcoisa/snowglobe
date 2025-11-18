@@ -19,55 +19,27 @@
 
     <div class="app-container">
       <!-- Side Navigation Menu -->
-      <aside :class="['sidebar', { collapsed: sidebarCollapsed }]">
-        <div class="sidebar-header">
-          <button class="collapse-btn" @click="sidebarCollapsed = !sidebarCollapsed" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
-            <span v-if="!sidebarCollapsed">◀</span>
-            <span v-else>▶</span>
-          </button>
-        </div>
-        
-        <nav class="sidebar-nav">
-          <button 
-            v-for="item in navItems" 
-            :key="item.id"
-            :class="['nav-item', { active: activeView === item.id }]"
-            @click="activeView = item.id"
-            :title="sidebarCollapsed ? item.label : ''"
-          >
-            <span class="nav-icon">{{ item.icon }}</span>
-            <span v-if="!sidebarCollapsed" class="nav-label">{{ item.label }}</span>
-          </button>
-        </nav>
-
-        <div v-if="!sidebarCollapsed" class="sidebar-footer">
-          <div class="connection-info">
-            <div class="info-label">Active Sessions</div>
-            <div class="info-value">{{ stats.active_sessions || 0 }}</div>
-          </div>
-          <div class="connection-info">
-            <div class="info-label">Queries</div>
-            <div class="info-value">{{ stats.total_queries || 0 }}</div>
-          </div>
-          <button class="refresh-btn" @click="fetchAll" title="Refresh">
-            <span :class="{ 'rotating': isRefreshing }">🔄</span>
-          </button>
-        </div>
-        
-        <div v-else class="sidebar-footer-compact">
-          <button class="refresh-btn-compact" @click="fetchAll" title="Refresh">
-            <span :class="{ 'rotating': isRefreshing }">🔄</span>
-          </button>
-        </div>
-      </aside>
+      <Sidebar 
+        :collapsed="sidebarCollapsed"
+        :activeView="activeView"
+        :stats="stats"
+        :isRefreshing="isRefreshing"
+        :worksheetCount="worksheetCount"
+        @toggle-collapse="sidebarCollapsed = !sidebarCollapsed"
+        @navigate="activeView = $event"
+        @refresh="fetchAll"
+      />
 
       <!-- Main Content Area -->
       <main class="main-content">
         <div class="view-container">
-          <!-- Worksheet View -->
-          <WorksheetPanel 
-            v-if="activeView === 'worksheet'" 
+          <!-- Worksheets View (new multi-worksheet page) -->
+          <WorksheetsPage 
+            v-if="activeView === 'worksheets'" 
+            :databases="databases"
             @query-executed="handleQueryExecuted"
+            @worksheet-count-changed="worksheetCount = $event"
+            @navigate="activeView = $event"
           />
 
           <!-- Overview View -->
@@ -91,6 +63,11 @@
             :sessions="sessions" 
             @refresh="fetchSessions" 
           />
+
+          <!-- Logs View -->
+          <LogsPage 
+            v-if="activeView === 'logs'" 
+          />
           
           <!-- Database Explorer View -->
           <DatabaseExplorer 
@@ -98,6 +75,62 @@
             :databases="databases" 
             @refresh="fetchDatabases" 
           />
+
+          <!-- Tables Browser -->
+          <ObjectBrowser
+            v-if="activeView === 'tables'"
+            type="tables"
+            title="Tables"
+            icon="📊"
+            :objects="tables"
+            @refresh="fetchTables"
+            @preview-data="previewTableData"
+            @describe-object="describeTable"
+          />
+
+          <!-- Views Browser -->
+          <ObjectBrowser
+            v-if="activeView === 'views'"
+            type="views"
+            title="Views"
+            icon="👁️"
+            :objects="views"
+            @refresh="fetchViews"
+          />
+
+          <!-- Schemas Browser -->
+          <ObjectBrowser
+            v-if="activeView === 'schemas'"
+            type="schemas"
+            title="Schemas"
+            icon="📁"
+            :objects="schemas"
+            :canDrillDown="true"
+            @refresh="fetchSchemas"
+            @drill-down="drillDownSchema"
+          />
+
+          <!-- Stages Browser -->
+          <ObjectBrowser
+            v-if="activeView === 'stages'"
+            type="stages"
+            title="Stages"
+            icon="📦"
+            :objects="stages"
+            @refresh="fetchStages"
+          />
+
+          <!-- Warehouses View -->
+          <div v-if="activeView === 'warehouses'" class="placeholder-view">
+            <h2>⚡ Warehouses</h2>
+            <div class="info-card">
+              <h3>COMPUTE_WH</h3>
+              <p>Status: <span class="status-running">RUNNING</span></p>
+              <p>Size: X-SMALL</p>
+              <p>Type: STANDARD</p>
+            </div>
+            <p class="note">Snowglobe uses local compute resources. Warehouses are simulated for compatibility.</p>
+          </div>
 
           <!-- Settings View -->
           <SettingsPanel 
@@ -128,40 +161,43 @@
 
 <script>
 import axios from 'axios'
-import WorksheetPanel from './components/WorksheetPanel.vue'
+import Sidebar from './components/Sidebar.vue'
+import WorksheetsPage from './components/WorksheetsPage.vue'
 import OverviewPanel from './components/OverviewPanel.vue'
 import QueryHistoryPanel from './components/QueryHistoryPanel.vue'
 import SessionsPanel from './components/SessionsPanel.vue'
 import DatabaseExplorer from './components/DatabaseExplorer.vue'
+import ObjectBrowser from './components/ObjectBrowser.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import LogsPage from './components/LogsPage.vue'
 
 export default {
   name: 'App',
   components: {
-    WorksheetPanel,
+    Sidebar,
+    WorksheetsPage,
     OverviewPanel,
     QueryHistoryPanel,
     SessionsPanel,
     DatabaseExplorer,
-    SettingsPanel
+    ObjectBrowser,
+    SettingsPanel,
+    LogsPage
   },
   data() {
     return {
-      activeView: 'worksheet',
+      activeView: 'worksheets',
       sidebarCollapsed: false,
-      navItems: [
-        { id: 'worksheet', label: 'Worksheet', icon: '📝' },
-        { id: 'overview', label: 'Overview', icon: '📊' },
-        { id: 'queries', label: 'Query History', icon: '🕒' },
-        { id: 'sessions', label: 'Sessions', icon: '🔗' },
-        { id: 'databases', label: 'Databases', icon: '🗄️' },
-        { id: 'settings', label: 'Settings', icon: '⚙️' }
-      ],
       serverStatus: {},
       stats: {},
       sessions: [],
       queries: [],
       databases: [],
+      schemas: [],
+      tables: [],
+      views: [],
+      stages: [],
+      worksheetCount: 1,
       autoRefresh: true,
       refreshInterval: null,
       isRefreshing: false,
@@ -183,7 +219,10 @@ export default {
         this.fetchStats(),
         this.fetchSessions(),
         this.fetchQueries(),
-        this.fetchDatabases()
+        this.fetchDatabases(),
+        this.fetchSchemas(),
+        this.fetchTables(),
+        this.fetchViews()
       ])
       this.isRefreshing = false
     },
@@ -227,6 +266,57 @@ export default {
         console.error('Failed to fetch databases:', error)
       }
     },
+    async fetchSchemas() {
+      try {
+        // Fetch schemas from current database via execute
+        const response = await axios.post('/api/execute', {
+          sql: 'SHOW SCHEMAS'
+        })
+        if (response.data.success) {
+          this.schemas = response.data.data.map(row => ({
+            name: row[0],
+            created_at: row[1]
+          }))
+        }
+      } catch (error) {
+        console.error('Failed to fetch schemas:', error)
+      }
+    },
+    async fetchTables() {
+      try {
+        const response = await axios.post('/api/execute', {
+          sql: 'SHOW TABLES'
+        })
+        if (response.data.success) {
+          this.tables = response.data.data.map(row => ({
+            name: row[0],
+            created_at: row[1],
+            row_count: row[2]
+          }))
+        }
+      } catch (error) {
+        console.error('Failed to fetch tables:', error)
+      }
+    },
+    async fetchViews() {
+      try {
+        const response = await axios.post('/api/execute', {
+          sql: 'SHOW VIEWS'
+        })
+        if (response.data.success) {
+          this.views = response.data.data.map(row => ({
+            name: row[0],
+            created_at: row[1]
+          }))
+        }
+      } catch (error) {
+        console.error('Failed to fetch views:', error)
+      }
+    },
+    async fetchStages() {
+      // Stages are simulated
+      this.stages = []
+    },
     async clearHistory() {
       try {
         await axios.delete('/api/queries/history')
@@ -240,6 +330,20 @@ export default {
       // Refresh stats and queries after a query is executed
       this.fetchStats()
       this.fetchQueries()
+      this.fetchTables()
+      this.fetchViews()
+    },
+    async previewTableData(table) {
+      this.activeView = 'worksheets'
+      // Could pass query to worksheet
+    },
+    async describeTable(table) {
+      this.activeView = 'worksheets'
+      // Could pass describe query to worksheet
+    },
+    drillDownSchema(schema) {
+      // Navigate to tables filtered by schema
+      this.activeView = 'tables'
     },
     startAutoRefresh() {
       this.refreshInterval = setInterval(() => {
@@ -351,177 +455,6 @@ export default {
   overflow: hidden;
 }
 
-.sidebar {
-  width: 240px;
-  background: var(--card-bg);
-  border-right: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  transition: width 0.3s ease;
-}
-
-.sidebar.collapsed {
-  width: 64px;
-}
-
-.sidebar-header {
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
-}
-
-.collapse-btn {
-  padding: 0.5rem;
-  background: none;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--text-muted);
-  transition: all 0.2s ease;
-  font-size: 0.9rem;
-}
-
-.collapse-btn:hover {
-  background: var(--bg-color);
-  color: var(--text-color);
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: 0.5rem;
-}
-
-.nav-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: none;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 0.95rem;
-  transition: all 0.2s ease;
-  margin-bottom: 0.25rem;
-  text-align: left;
-}
-
-.nav-item:hover {
-  background: var(--bg-color);
-  color: var(--text-color);
-}
-
-.nav-item.active {
-  background: linear-gradient(135deg, rgba(41, 181, 232, 0.15), rgba(26, 163, 217, 0.15));
-  color: var(--primary-color);
-  font-weight: 500;
-}
-
-.nav-icon {
-  font-size: 1.25rem;
-  width: 24px;
-  text-align: center;
-}
-
-.nav-label {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar.collapsed .nav-item {
-  justify-content: center;
-  padding: 0.75rem 0.5rem;
-}
-
-.sidebar.collapsed .nav-icon {
-  margin: 0;
-}
-
-.sidebar-footer-compact {
-  padding: 0.5rem;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-color);
-  display: flex;
-  justify-content: center;
-}
-
-.refresh-btn-compact {
-  padding: 0.5rem;
-  background: var(--primary-color);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 1rem;
-  transition: all 0.2s ease;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.refresh-btn-compact:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
-
-.sidebar-footer {
-  padding: 1rem;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-color);
-}
-
-.connection-info {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 0.5rem;
-  font-size: 0.85rem;
-}
-
-.info-label {
-  color: var(--text-muted);
-}
-
-.info-value {
-  font-weight: 600;
-  color: var(--primary-color);
-}
-
-.refresh-btn {
-  width: 100%;
-  padding: 0.5rem;
-  background: var(--primary-color);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 1rem;
-  margin-top: 0.5rem;
-  transition: all 0.2s ease;
-}
-
-.refresh-btn:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
-
-.rotating {
-  display: inline-block;
-  animation: rotate 1s linear infinite;
-}
-
-@keyframes rotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
 .main-content {
   flex: 1;
   overflow-y: auto;
@@ -554,5 +487,44 @@ export default {
   font-size: 0.8rem;
   color: var(--text-muted);
   flex-wrap: wrap;
+}
+
+.placeholder-view {
+  padding: 1.5rem;
+}
+
+.placeholder-view h2 {
+  font-size: 1.5rem;
+  margin: 0 0 1.5rem 0;
+}
+
+.info-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 400px;
+}
+
+.info-card h3 {
+  margin: 0 0 1rem 0;
+  font-size: 1.1rem;
+}
+
+.info-card p {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.status-running {
+  color: #10b981;
+  font-weight: 500;
+}
+
+.note {
+  margin-top: 1.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 </style>

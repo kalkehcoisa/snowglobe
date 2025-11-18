@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snowglobe Dashboard</title>
+    <style>
+        :root {
+            --primary: #29b5e8;
+            --success: #10b981;
+            --error: #ef4444;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --text: #1e293b;
+            --muted: #64748b;
+            --border: #e2e8f0;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); }
+        .header { background: linear-gradient(135deg, var(--primary), #1aa3d9); color: white; padding: 1rem 2rem; }
+        .header h1 { font-size: 1.5rem; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat-card { background: var(--card); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border); }
+        .stat-value { font-size: 2rem; font-weight: 700; }
+        .stat-label { color: var(--muted); font-size: 0.9rem; }
+        .section { background: var(--card); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--border); margin-bottom: 1.5rem; }
+        .section h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+        .query-item { background: var(--bg); padding: 1rem; border-radius: 8px; margin-bottom: 0.75rem; }
+        .query-item.failed { border-left: 4px solid var(--error); }
+        .query-header { display: flex; justify-content: space-between; margin-bottom: 0.5rem; font-size: 0.85rem; }
+        .status { display: flex; align-items: center; gap: 0.5rem; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-dot.success { background: var(--success); }
+        .status-dot.error { background: var(--error); }
+        .query-sql { font-family: monospace; font-size: 0.9rem; background: white; padding: 0.5rem; border-radius: 4px; word-break: break-all; }
+        .query-meta { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+        .query-error { background: #fee2e2; color: #991b1b; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; font-size: 0.85rem; }
+        .session-item { background: var(--bg); padding: 1rem; border-radius: 8px; margin-bottom: 0.5rem; }
+        .session-user { font-weight: 600; margin-bottom: 0.5rem; }
+        .session-details { font-size: 0.85rem; color: var(--muted); }
+        .empty { text-align: center; padding: 2rem; color: var(--muted); }
+        .actions { margin-bottom: 1rem; }
+        button { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; margin-right: 0.5rem; }
+        button:hover { background: var(--bg); }
+        .auto-refresh { font-size: 0.85rem; color: var(--muted); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>❄️ Snowglobe Dashboard</h1>
+    </div>
+    <div class="container">
+        <div class="actions">
+            <button onclick="refresh()">🔄 Refresh</button>
+            <button onclick="clearHistory()">🗑️ Clear History</button>
+            <span class="auto-refresh">Auto-refresh: <span id="autoStatus">ON</span> <button onclick="toggleAuto()">Toggle</button></span>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="uptime">-</div>
+                <div class="stat-label">Uptime</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="sessions">0</div>
+                <div class="stat-label">Active Sessions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="queries">0</div>
+                <div class="stat-label">Total Queries</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="success">0</div>
+                <div class="stat-label">Successful</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="failed">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgTime">0ms</div>
+                <div class="stat-label">Avg Query Time</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>📝 Recent Queries</h2>
+            <div id="queryList"><div class="empty">No queries yet</div></div>
+        </div>
+
+        <div class="section">
+            <h2>🔗 Active Sessions</h2>
+            <div id="sessionList"><div class="empty">No active sessions</div></div>
+        </div>
+    </div>
+
+    <script>
+        let autoRefresh = true;
+        let refreshInterval;
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('uptime').textContent = formatUptime(data.uptime_seconds);
+                document.getElementById('sessions').textContent = data.active_sessions;
+                document.getElementById('queries').textContent = data.total_queries;
+                document.getElementById('success').textContent = data.successful_queries;
+                document.getElementById('failed').textContent = data.failed_queries;
+                document.getElementById('avgTime').textContent = Math.round(data.average_query_duration_ms) + 'ms';
+            } catch (e) { console.error('Stats fetch error:', e); }
+        }
+
+        async function fetchQueries() {
+            try {
+                const res = await fetch('/api/queries?limit=20');
+                const data = await res.json();
+                const list = document.getElementById('queryList');
+                if (data.queries.length === 0) {
+                    list.innerHTML = '<div class="empty">No queries yet</div>';
+                } else {
+                    list.innerHTML = data.queries.map(q => `
+                        <div class="query-item ${q.success ? '' : 'failed'}">
+                            <div class="query-header">
+                                <div class="status">
+                                    <span class="status-dot ${q.success ? 'success' : 'error'}"></span>
+                                    ${q.success ? 'Success' : 'Failed'}
+                                </div>
+                                <div>${new Date(q.timestamp).toLocaleString()}</div>
+                            </div>
+                            <div class="query-sql">${escapeHtml(q.query.substring(0, 200))}${q.query.length > 200 ? '...' : ''}</div>
+                            <div class="query-meta">⏱️ ${Math.round(q.duration_ms)}ms | 📊 ${q.rows_affected} rows | 🔗 ${q.session_id.substring(0, 8)}...</div>
+                            ${q.error ? `<div class="query-error">❌ ${escapeHtml(q.error)}</div>` : ''}
+                        </div>
+                    `).join('');
+                }
+            } catch (e) { console.error('Queries fetch error:', e); }
+        }
+
+        async function fetchSessions() {
+            try {
+                const res = await fetch('/api/sessions');
+                const data = await res.json();
+                const list = document.getElementById('sessionList');
+                if (data.sessions.length === 0) {
+                    list.innerHTML = '<div class="empty">No active sessions</div>';
+                } else {
+                    list.innerHTML = data.sessions.map(s => `
+                        <div class="session-item">
+                            <div class="session-user">👤 ${escapeHtml(s.user)}</div>
+                            <div class="session-details">
+                                🗄️ ${s.database} | 📁 ${s.schema} | 🏭 ${s.warehouse} | 👔 ${s.role}<br>
+                                Session: ${s.session_id.substring(0, 16)}... | Created: ${new Date(s.created_at).toLocaleString()}
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) { console.error('Sessions fetch error:', e); }
+        }
+
+        function formatUptime(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) return `${h}h ${m}m`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.appendChild(document.createTextNode(text));
+            return div.innerHTML;
+        }
+
+        function refresh() {
+            fetchStats();
+            fetchQueries();
+            fetchSessions();
+        }
+
+        async function clearHistory() {
+            if (confirm('Clear all query history?')) {
+                await fetch('/api/queries/history', { method: 'DELETE' });
+                refresh();
+            }
+        }
+
+        function toggleAuto() {
+            autoRefresh = !autoRefresh;
+            document.getElementById('autoStatus').textContent = autoRefresh ? 'ON' : 'OFF';
+        }
+
+        refresh();
+        refreshInterval = setInterval(() => { if (autoRefresh) refresh(); }, 5000);
+    </script>
+</body>
+</html>

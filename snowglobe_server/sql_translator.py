@@ -21,6 +21,8 @@ class SnowflakeToDuckDBTranslator:
             # String functions
             'LEN': 'LENGTH',
             'CHARINDEX': 'STRPOS',
+            'STRTOK': 'STRING_SPLIT',
+            'INITCAP': 'INITCAP',
             
             # Null handling
             'NVL': 'COALESCE',
@@ -33,6 +35,15 @@ class SnowflakeToDuckDBTranslator:
             'TO_DECIMAL': 'CAST',
             'TO_DOUBLE': 'CAST',
             'TO_BOOLEAN': 'CAST',
+            
+            # Math functions
+            'SQUARE': 'POWER',
+            'TRUNC': 'TRUNC',
+            'TRUNCATE': 'TRUNC',
+            
+            # Array functions
+            'ARRAY_SIZE': 'LEN',
+            'ARRAY_TO_STRING': 'ARRAY_TO_STRING',
         }
         
         self.type_mappings = {
@@ -108,6 +119,24 @@ class SnowflakeToDuckDBTranslator:
         translated = self._translate_nullifzero(translated)
         translated = self._translate_equal_null(translated)
         translated = self._translate_within_group(translated)
+        translated = self._translate_date_trunc(translated)
+        translated = self._translate_time_slice(translated)
+        translated = self._translate_last_day(translated)
+        translated = self._translate_monthname(translated)
+        translated = self._translate_dayname(translated)
+        translated = self._translate_hash(translated)
+        translated = self._translate_md5(translated)
+        translated = self._translate_sha1(translated)
+        translated = self._translate_base64(translated)
+        translated = self._translate_typeof(translated)
+        translated = self._translate_is_type(translated)
+        translated = self._translate_array_agg(translated)
+        translated = self._translate_object_keys(translated)
+        translated = self._translate_get_path(translated)
+        translated = self._translate_rlike(translated)
+        translated = self._translate_square(translated)
+        translated = self._translate_ratio_to_report(translated)
+        translated = self._translate_conditional_expressions(translated)
         
         return translated
     
@@ -500,6 +529,139 @@ class SnowflakeToDuckDBTranslator:
         """Handle WITHIN GROUP clause for ordered aggregates"""
         # This is partially supported in DuckDB
         # For now, we'll keep it as is
+        return sql
+    
+    def _translate_date_trunc(self, sql: str) -> str:
+        """Translate DATE_TRUNC (same in DuckDB)"""
+        # DATE_TRUNC is supported natively in DuckDB
+        return sql
+    
+    def _translate_time_slice(self, sql: str) -> str:
+        """Translate TIME_SLICE function"""
+        pattern = r'\bTIME_SLICE\s*\(\s*([^,]+)\s*,\s*(\d+)\s*,\s*\'?(\w+)\'?\s*\)'
+        
+        def replace_time_slice(match):
+            date_expr = match.group(1).strip()
+            slice_length = match.group(2)
+            date_part = match.group(3).upper()
+            return f"DATE_TRUNC('{date_part}', {date_expr})"
+        
+        return re.sub(pattern, replace_time_slice, sql, flags=re.IGNORECASE)
+    
+    def _translate_last_day(self, sql: str) -> str:
+        """Translate LAST_DAY function"""
+        pattern = r'\bLAST_DAY\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"(DATE_TRUNC('month', \1) + INTERVAL '1 month' - INTERVAL '1 day')::DATE", 
+                      sql, flags=re.IGNORECASE)
+    
+    def _translate_monthname(self, sql: str) -> str:
+        """Translate MONTHNAME function"""
+        pattern = r'\bMONTHNAME\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"STRFTIME(\1, '%B')", sql, flags=re.IGNORECASE)
+    
+    def _translate_dayname(self, sql: str) -> str:
+        """Translate DAYNAME function"""
+        pattern = r'\bDAYNAME\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"STRFTIME(\1, '%A')", sql, flags=re.IGNORECASE)
+    
+    def _translate_hash(self, sql: str) -> str:
+        """Translate HASH function"""
+        pattern = r'\bHASH\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"HASH(\1)", sql, flags=re.IGNORECASE)
+    
+    def _translate_md5(self, sql: str) -> str:
+        """Translate MD5 function (same in DuckDB)"""
+        # MD5 is supported natively
+        return sql
+    
+    def _translate_sha1(self, sql: str) -> str:
+        """Translate SHA1 function"""
+        pattern = r'\bSHA1\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"SHA256(\1)", sql, flags=re.IGNORECASE)
+    
+    def _translate_base64(self, sql: str) -> str:
+        """Translate BASE64 functions"""
+        # BASE64_ENCODE -> ENCODE
+        pattern = r'\bBASE64_ENCODE\s*\(\s*([^)]+)\s*\)'
+        result = re.sub(pattern, r"BASE64(\1)", sql, flags=re.IGNORECASE)
+        
+        # BASE64_DECODE -> DECODE
+        pattern = r'\bBASE64_DECODE_STRING\s*\(\s*([^)]+)\s*\)'
+        result = re.sub(pattern, r"FROM_BASE64(\1)", result, flags=re.IGNORECASE)
+        
+        return result
+    
+    def _translate_typeof(self, sql: str) -> str:
+        """Translate TYPEOF function"""
+        pattern = r'\bTYPEOF\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"TYPEOF(\1)", sql, flags=re.IGNORECASE)
+    
+    def _translate_is_type(self, sql: str) -> str:
+        """Translate IS_* type checking functions"""
+        # IS_INTEGER, IS_DECIMAL, etc.
+        for type_name in ['INTEGER', 'DECIMAL', 'DOUBLE', 'VARCHAR', 'BOOLEAN', 'DATE', 'TIMESTAMP', 'ARRAY', 'OBJECT']:
+            pattern = rf'\bIS_{type_name}\s*\(\s*([^)]+)\s*\)'
+            result = re.sub(pattern, rf"TYPEOF(\1) = '{type_name.lower()}'", sql, flags=re.IGNORECASE)
+            sql = result
+        return sql
+    
+    def _translate_array_agg(self, sql: str) -> str:
+        """Translate ARRAY_AGG (supported in DuckDB)"""
+        return sql
+    
+    def _translate_object_keys(self, sql: str) -> str:
+        """Translate OBJECT_KEYS function"""
+        pattern = r'\bOBJECT_KEYS\s*\(\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"JSON_KEYS(\1)", sql, flags=re.IGNORECASE)
+    
+    def _translate_get_path(self, sql: str) -> str:
+        """Translate GET_PATH function for JSON access"""
+        pattern = r'\bGET_PATH\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)'
+        return re.sub(pattern, r"JSON_EXTRACT(\1, \2)", sql, flags=re.IGNORECASE)
+    
+    def _translate_rlike(self, sql: str) -> str:
+        """Translate RLIKE to REGEXP_MATCHES"""
+        pattern = r'\b(\w+)\s+RLIKE\s+([^\s,)]+)'
+        return re.sub(pattern, r"REGEXP_MATCHES(\1, \2)", sql, flags=re.IGNORECASE)
+    
+    def _translate_square(self, sql: str) -> str:
+        """Translate SQUARE function to POWER(x, 2)"""
+        pattern = r'\bSQUARE\s*\(\s*([^)]+)\s*\)'
+        
+        def replace_square(match):
+            expr = match.group(1).strip()
+            return f"POWER({expr}, 2)"
+        
+        return re.sub(pattern, replace_square, sql, flags=re.IGNORECASE)
+    
+    def _translate_ratio_to_report(self, sql: str) -> str:
+        """Translate RATIO_TO_REPORT window function"""
+        pattern = r'\bRATIO_TO_REPORT\s*\(\s*([^)]+)\s*\)\s*OVER\s*\(\s*([^)]*)\s*\)'
+        
+        def replace_ratio(match):
+            expr = match.group(1).strip()
+            partition = match.group(2).strip()
+            if partition:
+                return f"({expr} / SUM({expr}) OVER ({partition}))"
+            else:
+                return f"({expr} / SUM({expr}) OVER ())"
+        
+        return re.sub(pattern, replace_ratio, sql, flags=re.IGNORECASE)
+    
+    def _translate_conditional_expressions(self, sql: str) -> str:
+        """Translate Snowflake conditional expressions"""
+        # BOOLOR_AGG -> BOOL_OR
+        sql = re.sub(r'\bBOOLOR_AGG\s*\(', 'BOOL_OR(', sql, flags=re.IGNORECASE)
+        
+        # BOOLAND_AGG -> BOOL_AND
+        sql = re.sub(r'\bBOOLAND_AGG\s*\(', 'BOOL_AND(', sql, flags=re.IGNORECASE)
+        
+        # BITOR_AGG -> BIT_OR
+        sql = re.sub(r'\bBITOR_AGG\s*\(', 'BIT_OR(', sql, flags=re.IGNORECASE)
+        
+        # BITAND_AGG -> BIT_AND
+        sql = re.sub(r'\bBITAND_AGG\s*\(', 'BIT_AND(', sql, flags=re.IGNORECASE)
+        
         return sql
     
     def _parse_function_args(self, args_str: str) -> list:

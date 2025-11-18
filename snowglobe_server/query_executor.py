@@ -369,6 +369,116 @@ class QueryExecutor:
             return {"success": True, "data": data, 
                     "columns": ["name", "dropped_on"], "rowcount": len(data)}
         
+        # SHOW VIEWS
+        match = re.match(r'SHOW\s+VIEWS(?:\s+IN\s+(?:SCHEMA\s+)?([a-zA-Z_][a-zA-Z0-9_]*))?', sql, re.IGNORECASE)
+        if match:
+            schema_name = match.group(1).upper() if match.group(1) else self.current_schema
+            try:
+                views = self.metadata.list_views(self.current_database, schema_name)
+                data = [[v["name"], v["created_at"]] for v in views]
+                return {"success": True, "data": data, "columns": ["name", "created_on"], "rowcount": len(data)}
+            except ValueError as e:
+                return {"success": False, "error": str(e), "data": [], "columns": [], "rowcount": 0}
+        
+        # SHOW WAREHOUSES
+        if re.match(r'SHOW\s+WAREHOUSES', sql, re.IGNORECASE):
+            data = [[self.current_warehouse, "STARTED", "STANDARD", "X-SMALL"]]
+            return {"success": True, "data": data, 
+                    "columns": ["name", "state", "type", "size"], "rowcount": len(data)}
+        
+        # SHOW ROLES
+        if re.match(r'SHOW\s+ROLES', sql, re.IGNORECASE):
+            data = [["ACCOUNTADMIN"], ["SYSADMIN"], ["USERADMIN"], ["PUBLIC"], [self.current_role]]
+            return {"success": True, "data": data, "columns": ["name"], "rowcount": len(data)}
+        
+        # SHOW USERS
+        if re.match(r'SHOW\s+USERS', sql, re.IGNORECASE):
+            data = [["SNOWGLOBE_USER", "SNOWGLOBE_USER@LOCAL", "ACTIVE"]]
+            return {"success": True, "data": data, 
+                    "columns": ["name", "email", "status"], "rowcount": len(data)}
+        
+        # SHOW GRANTS
+        if re.match(r'SHOW\s+GRANTS', sql, re.IGNORECASE):
+            data = [["USAGE", "DATABASE", self.current_database, self.current_role]]
+            return {"success": True, "data": data, 
+                    "columns": ["privilege", "object_type", "name", "grantee"], "rowcount": len(data)}
+        
+        # SHOW PARAMETERS
+        if re.match(r'SHOW\s+PARAMETERS', sql, re.IGNORECASE):
+            data = [
+                ["TIMEZONE", "America/Los_Angeles", "SESSION"],
+                ["QUERY_TAG", "", "SESSION"],
+                ["DATE_OUTPUT_FORMAT", "YYYY-MM-DD", "SESSION"],
+            ]
+            return {"success": True, "data": data, 
+                    "columns": ["key", "value", "level"], "rowcount": len(data)}
+        
+        # SHOW COLUMNS
+        match = re.match(r'SHOW\s+COLUMNS\s+IN\s+(?:TABLE\s+)?([a-zA-Z_][a-zA-Z0-9_]*)', sql, re.IGNORECASE)
+        if match:
+            table_name = match.group(1).upper()
+            table_info = self.metadata.get_table_info(self.current_database, self.current_schema, table_name)
+            if table_info:
+                data = [[col["name"], col["type"], col.get("nullable", "Y")] for col in table_info["columns"]]
+                return {"success": True, "data": data, "columns": ["column_name", "data_type", "is_nullable"], "rowcount": len(data)}
+            else:
+                return {"success": False, "error": f"Table '{table_name}' does not exist",
+                        "data": [], "columns": [], "rowcount": 0}
+        
+        # SELECT CURRENT_SESSION()
+        if re.match(r'SELECT\s+CURRENT_SESSION\s*\(\s*\)', sql, re.IGNORECASE):
+            return {"success": True, "data": [["snowglobe_session_001"]], 
+                    "columns": ["CURRENT_SESSION()"], "rowcount": 1}
+        
+        # SELECT CURRENT_REGION()
+        if re.match(r'SELECT\s+CURRENT_REGION\s*\(\s*\)', sql, re.IGNORECASE):
+            return {"success": True, "data": [["LOCAL"]], 
+                    "columns": ["CURRENT_REGION()"], "rowcount": 1}
+        
+        # SELECT CURRENT_VERSION()
+        if re.match(r'SELECT\s+CURRENT_VERSION\s*\(\s*\)', sql, re.IGNORECASE):
+            return {"success": True, "data": [["0.1.0"]], 
+                    "columns": ["CURRENT_VERSION()"], "rowcount": 1}
+        
+        # SELECT CURRENT_CLIENT()
+        if re.match(r'SELECT\s+CURRENT_CLIENT\s*\(\s*\)', sql, re.IGNORECASE):
+            return {"success": True, "data": [["Snowglobe"]], 
+                    "columns": ["CURRENT_CLIENT()"], "rowcount": 1}
+        
+        # SELECT $variable
+        match = re.match(r'SELECT\s+\$([a-zA-Z_][a-zA-Z0-9_]*)', sql, re.IGNORECASE)
+        if match:
+            var_name = match.group(1).upper()
+            if var_name in self.session_vars:
+                return {"success": True, "data": [[self.session_vars[var_name]]], 
+                        "columns": [f"${var_name}"], "rowcount": 1}
+            else:
+                return {"success": False, "error": f"Variable '{var_name}' not found",
+                        "data": [], "columns": [], "rowcount": 0}
+        
+        # UNSET variable
+        match = re.match(r'UNSET\s+([a-zA-Z_][a-zA-Z0-9_]*)', sql, re.IGNORECASE)
+        if match:
+            var_name = match.group(1).upper()
+            if var_name in self.session_vars:
+                del self.session_vars[var_name]
+            return {"success": True, "data": [], "columns": [], "rowcount": 0,
+                    "message": f"Variable {var_name} unset"}
+        
+        # LIST @stage (stage operations)
+        match = re.match(r'LIST\s+@([a-zA-Z_][a-zA-Z0-9_]*)', sql, re.IGNORECASE)
+        if match:
+            stage_name = match.group(1).upper()
+            # Return empty list for now as stage storage is not fully implemented
+            return {"success": True, "data": [], 
+                    "columns": ["name", "size", "md5", "last_modified"], "rowcount": 0}
+        
+        # REMOVE @stage/file
+        match = re.match(r'REMOVE\s+@([a-zA-Z_][a-zA-Z0-9_/]*)', sql, re.IGNORECASE)
+        if match:
+            return {"success": True, "data": [], "columns": [], "rowcount": 0,
+                    "message": "Files removed"}
+        
         return None
     
     def _handle_ddl(self, sql: str) -> Optional[Dict[str, Any]]:
