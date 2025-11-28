@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
+import re
 
 from .query_executor import QueryExecutor
 from .decorators import (
@@ -31,6 +32,18 @@ from .decorators import (
     SessionManager
 )
 from .template_loader import load_template
+from .dbt_adapter import (
+    DbtAdapter,
+    DbtModel,
+    DbtSource,
+    DbtSeed,
+    DbtTest,
+    DbtSnapshot,
+    DbtProjectConfig,
+    MaterializationType,
+    generate_profiles_yml,
+    generate_sample_project,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -884,6 +897,663 @@ async def dashboard_static(path: str):
 def get_dashboard_html():
     """Return the dashboard HTML (deprecated - use load_template instead)"""
     return load_template("dashboard.html")
+
+
+# ========== dbt Support Endpoints ==========
+
+# Global dbt adapter instance (created per-session or on-demand)
+_dbt_adapters: Dict[str, DbtAdapter] = {}
+
+
+def _get_dbt_adapter(session_id: str = None) -> DbtAdapter:
+    """Get or create a dbt adapter for the given session"""
+    if session_id and session_id in _dbt_adapters:
+        return _dbt_adapters[session_id]
+    
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+        session_id = session_id or first_session["session_id"]
+    else:
+        executor = QueryExecutor(data_dir)
+        session_id = session_id or "dbt-default"
+    
+    adapter = DbtAdapter(executor)
+    _dbt_adapters[session_id] = adapter
+    return adapter
+
+
+class DbtCompileRequest(BaseModel):
+    sql: str
+    vars: Optional[Dict[str, Any]] = None
+
+
+class DbtRunRequest(BaseModel):
+    select: Optional[str] = None
+    exclude: Optional[str] = None
+    full_refresh: bool = False
+
+
+class DbtSeedRequest(BaseModel):
+    select: Optional[str] = None
+    full_refresh: bool = False
+
+
+class DbtTestRequest(BaseModel):
+    select: Optional[str] = None
+
+
+class DbtSnapshotRequest(BaseModel):
+    select: Optional[str] = None
+
+
+class DbtSourceRequest(BaseModel):
+    name: str
+    database: str
+    schema_name: str  # 'schema' is reserved
+    tables: List[Dict[str, Any]]
+    description: str = ""
+
+
+class DbtModelRequest(BaseModel):
+    name: str
+    sql: str
+    materialization: str = "view"
+    schema_name: Optional[str] = None
+    alias: Optional[str] = None
+    tags: List[str] = []
+    description: str = ""
+
+
+@app.get("/api/dbt/status")
+@handle_exceptions
+async def dbt_status():
+    """Get dbt adapter status and capabilities"""
+    return {
+        "enabled": True,
+        "version": "1.0.0",
+        "adapter_type": "snowglobe",
+        "features": {
+            "models": True,
+            "seeds": True,
+            "tests": True,
+            "snapshots": True,
+            "sources": True,
+            "documentation": True,
+            "lineage": True,
+            "compilation": True,
+            "incremental": True,
+        },
+        "supported_materializations": [m.value for m in MaterializationType],
+    }
+
+
+@app.post("/api/dbt/compile")
+@handle_exceptions
+async def dbt_compile(request: DbtCompileRequest):
+    """Compile dbt-style SQL with refs and sources"""
+    adapter = _get_dbt_adapter()
+    
+    # Set vars if provided
+    if request.vars:
+        adapter.project_config.vars.update(request.vars)
+    
+    try:
+        compiled_sql = adapter.compile_sql(request.sql)
+        return {
+            "success": True,
+            "compiled_sql": compiled_sql,
+            "original_sql": request.sql,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "original_sql": request.sql,
+        }
+
+
+@app.post("/api/dbt/run")
+@handle_exceptions
+async def dbt_run(request: DbtRunRequest):
+    """Run dbt models"""
+    adapter = _get_dbt_adapter()
+    
+    try:
+        results = adapter.run(
+            select=request.select,
+            exclude=request.exclude,
+            full_refresh=request.full_refresh,
+        )
+        
+        return {
+            "success": True,
+            "results": adapter.get_run_results(),
+            "summary": {
+                "total": len(results),
+                "success": sum(1 for r in results if r.status == "success"),
+                "error": sum(1 for r in results if r.status == "error"),
+                "skipped": sum(1 for r in results if r.status == "skipped"),
+            }
+        }
+    except Exception as e:
+        logger.error(f"dbt run error: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.post("/api/dbt/seed")
+@handle_exceptions
+async def dbt_seed(request: DbtSeedRequest):
+    """Load dbt seed data"""
+    adapter = _get_dbt_adapter()
+    
+    try:
+        results = adapter.seed(
+            select=request.select,
+            full_refresh=request.full_refresh,
+        )
+        
+        return {
+            "success": True,
+            "results": [
+                {
+                    "status": r.status,
+                    "message": r.message,
+                    "node": r.node,
+                    "execution_time": r.execution_time,
+                }
+                for r in results
+            ],
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.post("/api/dbt/test")
+@handle_exceptions
+async def dbt_test(request: DbtTestRequest):
+    """Run dbt tests"""
+    adapter = _get_dbt_adapter()
+    
+    try:
+        results = adapter.test(select=request.select)
+        
+        return {
+            "success": True,
+            "results": [
+                {
+                    "status": r.status,
+                    "message": r.message,
+                    "node": r.node,
+                    "failures": r.failures,
+                    "execution_time": r.execution_time,
+                }
+                for r in results
+            ],
+            "summary": {
+                "total": len(results),
+                "pass": sum(1 for r in results if r.status == "success"),
+                "fail": sum(1 for r in results if r.status == "error"),
+                "warn": sum(1 for r in results if r.status == "warn"),
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.post("/api/dbt/snapshot")
+@handle_exceptions
+async def dbt_snapshot(request: DbtSnapshotRequest):
+    """Run dbt snapshots"""
+    adapter = _get_dbt_adapter()
+    
+    try:
+        results = adapter.snapshot(select=request.select)
+        
+        return {
+            "success": True,
+            "results": [
+                {
+                    "status": r.status,
+                    "message": r.message,
+                    "node": r.node,
+                    "execution_time": r.execution_time,
+                }
+                for r in results
+            ],
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.get("/api/dbt/sources")
+@handle_exceptions
+async def dbt_list_sources():
+    """List all dbt sources"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "sources": [
+            {
+                "name": source.name,
+                "database": source.database,
+                "schema": source.schema,
+                "tables": source.tables,
+                "description": source.description,
+            }
+            for source in adapter.sources.values()
+        ],
+        "count": len(adapter.sources),
+    }
+
+
+@app.post("/api/dbt/sources")
+@handle_exceptions
+async def dbt_register_source(request: DbtSourceRequest):
+    """Register a new dbt source"""
+    adapter = _get_dbt_adapter()
+    
+    source = DbtSource(
+        name=request.name,
+        database=request.database.upper(),
+        schema=request.schema_name.upper(),
+        tables=request.tables,
+        description=request.description,
+    )
+    
+    adapter.sources[source.name] = source
+    adapter.compiler.register_source(source)
+    
+    return {
+        "success": True,
+        "source": {
+            "name": source.name,
+            "database": source.database,
+            "schema": source.schema,
+            "tables": source.tables,
+        }
+    }
+
+
+@app.get("/api/dbt/models")
+@handle_exceptions
+async def dbt_list_models():
+    """List all dbt models"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "models": [
+            {
+                "name": model.name,
+                "database": model.database,
+                "schema": model.schema,
+                "alias": model.alias,
+                "materialization": model.materialization.value,
+                "status": model.status,
+                "description": model.description,
+                "tags": model.tags,
+                "depends_on": model.depends_on,
+                "last_run_at": model.last_run_at,
+                "execution_time_ms": model.execution_time_ms,
+            }
+            for model in adapter.models.values()
+        ],
+        "count": len(adapter.models),
+    }
+
+
+@app.post("/api/dbt/models")
+@handle_exceptions
+async def dbt_register_model(request: DbtModelRequest):
+    """Register a new dbt model"""
+    adapter = _get_dbt_adapter()
+    
+    try:
+        mat_type = MaterializationType(request.materialization)
+    except ValueError:
+        mat_type = MaterializationType.VIEW
+    
+    model = DbtModel(
+        name=request.name,
+        database=adapter.current_database,
+        schema=(request.schema_name or adapter.current_schema).upper(),
+        alias=request.alias,
+        materialization=mat_type,
+        sql=request.sql,
+        unique_id=f"model.snowglobe.{request.name}",
+        tags=request.tags,
+        description=request.description,
+        created_at=datetime.utcnow().isoformat(),
+    )
+    
+    # Compile the SQL
+    model.compiled_sql = adapter.compiler.compile(request.sql, model, {
+        'vars': adapter.project_config.vars,
+        'target': adapter.target,
+    })
+    
+    # Extract dependencies
+    refs = re.findall(r'\{\{\s*ref\s*\([\'"](\w+)[\'"]\)\s*\}\}', request.sql)
+    model.depends_on = refs
+    
+    adapter.models[model.name] = model
+    adapter.compiler.register_model(model)
+    
+    return {
+        "success": True,
+        "model": {
+            "name": model.name,
+            "unique_id": model.unique_id,
+            "compiled_sql": model.compiled_sql,
+            "depends_on": model.depends_on,
+        }
+    }
+
+
+@app.get("/api/dbt/models/{model_name}")
+@handle_exceptions
+async def dbt_get_model(model_name: str):
+    """Get details for a specific model"""
+    adapter = _get_dbt_adapter()
+    
+    if model_name not in adapter.models:
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
+    
+    model = adapter.models[model_name]
+    
+    return {
+        "model": {
+            "name": model.name,
+            "database": model.database,
+            "schema": model.schema,
+            "alias": model.alias,
+            "materialization": model.materialization.value,
+            "sql": model.sql,
+            "compiled_sql": model.compiled_sql,
+            "status": model.status,
+            "description": model.description,
+            "columns": model.columns,
+            "tags": model.tags,
+            "meta": model.meta,
+            "depends_on": model.depends_on,
+            "created_at": model.created_at,
+            "last_run_at": model.last_run_at,
+            "execution_time_ms": model.execution_time_ms,
+            "rows_affected": model.rows_affected,
+            "error": model.error,
+        }
+    }
+
+
+@app.post("/api/dbt/models/{model_name}/run")
+@handle_exceptions
+async def dbt_run_model(model_name: str, full_refresh: bool = False):
+    """Run a specific model"""
+    adapter = _get_dbt_adapter()
+    
+    if model_name not in adapter.models:
+        raise HTTPException(status_code=404, detail=f"Model {model_name} not found")
+    
+    model = adapter.models[model_name]
+    result = adapter._run_model(model, full_refresh)
+    
+    return {
+        "success": result.status == "success",
+        "result": {
+            "status": result.status,
+            "message": result.message,
+            "execution_time": result.execution_time,
+            "node": result.node,
+        }
+    }
+
+
+@app.get("/api/dbt/models/{model_name}/lineage")
+@handle_exceptions
+async def dbt_model_lineage(model_name: str):
+    """Get lineage for a model"""
+    adapter = _get_dbt_adapter()
+    
+    lineage = adapter.get_model_lineage(model_name)
+    
+    if 'error' in lineage:
+        raise HTTPException(status_code=404, detail=lineage['error'])
+    
+    return lineage
+
+
+@app.get("/api/dbt/tests")
+@handle_exceptions
+async def dbt_list_tests():
+    """List all dbt tests"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "tests": [
+            {
+                "name": test.name,
+                "unique_id": test.unique_id,
+                "model": test.model,
+                "column": test.column,
+                "test_type": test.test_type,
+                "severity": test.severity,
+                "status": test.status,
+            }
+            for test in adapter.tests.values()
+        ],
+        "count": len(adapter.tests),
+    }
+
+
+@app.get("/api/dbt/seeds")
+@handle_exceptions
+async def dbt_list_seeds():
+    """List all dbt seeds"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "seeds": [
+            {
+                "name": seed.name,
+                "database": seed.database,
+                "schema": seed.schema,
+                "file_path": seed.file_path,
+                "rows_loaded": seed.rows_loaded,
+                "loaded_at": seed.loaded_at,
+            }
+            for seed in adapter.seeds.values()
+        ],
+        "count": len(adapter.seeds),
+    }
+
+
+@app.get("/api/dbt/snapshots")
+@handle_exceptions
+async def dbt_list_snapshots():
+    """List all dbt snapshots"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "snapshots": [
+            {
+                "name": snapshot.name,
+                "database": snapshot.database,
+                "schema": snapshot.schema,
+                "strategy": snapshot.strategy,
+                "unique_key": snapshot.unique_key,
+            }
+            for snapshot in adapter.snapshots.values()
+        ],
+        "count": len(adapter.snapshots),
+    }
+
+
+@app.get("/api/dbt/source-freshness")
+@handle_exceptions
+async def dbt_source_freshness(select: Optional[str] = None):
+    """Check source freshness"""
+    adapter = _get_dbt_adapter()
+    
+    return adapter.source_freshness(select)
+
+
+@app.get("/api/dbt/docs")
+@handle_exceptions
+async def dbt_generate_docs():
+    """Generate dbt documentation"""
+    adapter = _get_dbt_adapter()
+    
+    return adapter.generate_docs()
+
+
+@app.get("/api/dbt/profiles")
+@handle_exceptions
+async def dbt_profiles():
+    """Get profiles.yml configuration for connecting with dbt-snowflake"""
+    return {
+        "profiles_yml": generate_profiles_yml(
+            host="localhost",
+            port=int(os.getenv("SNOWGLOBE_HTTPS_PORT", "8443")),
+        ),
+        "instructions": [
+            "Save the profiles_yml content to ~/.dbt/profiles.yml",
+            "Or set DBT_PROFILES_DIR environment variable to point to your profiles directory",
+            "Use 'insecure_mode: true' for self-signed certificates",
+            "Any username/password will work with Snowglobe",
+        ]
+    }
+
+
+@app.post("/api/dbt/project/load")
+@handle_exceptions
+async def dbt_load_project(request: Request):
+    """Load a dbt project from directory"""
+    body = await request.json()
+    project_dir = body.get("project_dir", "")
+    
+    if not project_dir or not os.path.exists(project_dir):
+        return {
+            "success": False,
+            "error": f"Project directory not found: {project_dir}",
+        }
+    
+    adapter = _get_dbt_adapter()
+    
+    try:
+        adapter.load_project(project_dir)
+        
+        return {
+            "success": True,
+            "project": {
+                "name": adapter.project_config.name,
+                "version": adapter.project_config.version,
+                "models_count": len(adapter.models),
+                "sources_count": len(adapter.sources),
+                "seeds_count": len(adapter.seeds),
+                "tests_count": len(adapter.tests),
+                "snapshots_count": len(adapter.snapshots),
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.post("/api/dbt/project/generate")
+@handle_exceptions
+async def dbt_generate_project(request: Request):
+    """Generate a sample dbt project"""
+    body = await request.json()
+    project_dir = body.get("project_dir", "/tmp/dbt_sample_project")
+    
+    try:
+        generate_sample_project(project_dir)
+        
+        return {
+            "success": True,
+            "project_dir": project_dir,
+            "message": "Sample dbt project created successfully",
+            "files_created": [
+                "dbt_project.yml",
+                "profiles.yml",
+                "models/staging/stg_customers.sql",
+                "models/staging/schema.yml",
+                "models/marts/dim_customers.sql",
+                "seeds/sample_data.csv",
+            ]
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+@app.get("/api/dbt/vars")
+@handle_exceptions
+async def dbt_get_vars():
+    """Get dbt project variables"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "vars": adapter.project_config.vars,
+    }
+
+
+@app.post("/api/dbt/vars")
+@handle_exceptions
+async def dbt_set_vars(request: Request):
+    """Set dbt project variables"""
+    body = await request.json()
+    vars_dict = body.get("vars", {})
+    
+    adapter = _get_dbt_adapter()
+    adapter.project_config.vars.update(vars_dict)
+    
+    return {
+        "success": True,
+        "vars": adapter.project_config.vars,
+    }
+
+
+@app.get("/api/dbt/run-results")
+@handle_exceptions
+async def dbt_run_results():
+    """Get results from the last dbt run"""
+    adapter = _get_dbt_adapter()
+    
+    return {
+        "results": adapter.get_run_results(),
+        "count": len(adapter.run_results),
+    }
+
+
+@app.delete("/api/dbt/cache")
+@handle_exceptions
+async def dbt_clear_cache():
+    """Clear dbt adapter cache"""
+    global _dbt_adapters
+    _dbt_adapters.clear()
+    
+    return {
+        "success": True,
+        "message": "dbt adapter cache cleared",
+    }
 
 
 # Old embedded HTML removed - now loaded from templates/dashboard.html

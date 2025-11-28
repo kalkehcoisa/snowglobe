@@ -703,3 +703,190 @@ def translate_snowflake_to_duckdb(sql: str) -> str:
     """Convenience function to translate SQL"""
     translator = SnowflakeToDuckDBTranslator()
     return translator.translate(sql)
+
+
+class DbtSqlTranslator(SnowflakeToDuckDBTranslator):
+    """
+    Extended SQL translator with dbt-specific pattern support.
+    Handles additional dbt patterns beyond standard Snowflake SQL.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        
+        # Additional dbt-specific function mappings
+        self.dbt_function_mappings = {
+            'DATEDIFF': 'DATE_DIFF',
+            'DATEPART': 'DATE_PART',
+            'SAFE_DIVIDE': 'TRY_CAST',  # Approximation
+        }
+    
+    def translate(self, sql: str) -> str:
+        """Extended translation with dbt-specific patterns"""
+        # First apply standard Snowflake translations
+        translated = super().translate(sql)
+        
+        # Then apply dbt-specific translations
+        translated = self._translate_incremental_patterns(translated)
+        translated = self._translate_snapshot_patterns(translated)
+        translated = self._translate_dbt_utils(translated)
+        translated = self._translate_merge_statement(translated)
+        translated = self._translate_copy_grants(translated)
+        translated = self._translate_transient(translated)
+        translated = self._translate_clustering(translated)
+        translated = self._translate_data_retention(translated)
+        
+        return translated
+    
+    def _translate_incremental_patterns(self, sql: str) -> str:
+        """Handle dbt incremental model patterns"""
+        # Remove {% if is_incremental() %} blocks if not handled by Jinja
+        # These should already be processed by the dbt adapter, but clean up any remnants
+        pattern = r'\{%\s*if\s+is_incremental\s*\(\s*\)\s*%\}(.*?)\{%\s*endif\s*%\}'
+        sql = re.sub(pattern, r'\1', sql, flags=re.DOTALL | re.IGNORECASE)
+        
+        return sql
+    
+    def _translate_snapshot_patterns(self, sql: str) -> str:
+        """Handle dbt snapshot patterns"""
+        # Remove snapshot Jinja blocks
+        pattern = r'\{%\s*snapshot\s+\w+\s*%\}(.*?)\{%\s*endsnapshot\s*%\}'
+        
+        def extract_snapshot_sql(match):
+            content = match.group(1)
+            # Remove config blocks
+            content = re.sub(r'\{\{\s*config\s*\(.*?\)\s*\}\}', '', content, flags=re.DOTALL)
+            return content.strip()
+        
+        sql = re.sub(pattern, extract_snapshot_sql, sql, flags=re.DOTALL)
+        
+        return sql
+    
+    def _translate_dbt_utils(self, sql: str) -> str:
+        """Translate common dbt_utils macros to SQL"""
+        
+        # dbt_utils.surrogate_key -> hash of concatenated columns
+        pattern = r'\{\{\s*dbt_utils\.surrogate_key\s*\(\s*\[(.*?)\]\s*\)\s*\}\}'
+        
+        def replace_surrogate_key(match):
+            columns = match.group(1)
+            cols = [c.strip().strip("'\"") for c in columns.split(',')]
+            concat = " || '-' || ".join([f"COALESCE(CAST({col} AS VARCHAR), '')" for col in cols])
+            return f"MD5({concat})"
+        
+        sql = re.sub(pattern, replace_surrogate_key, sql)
+        
+        # dbt_utils.generate_series -> generate_series (DuckDB native)
+        pattern = r'\{\{\s*dbt_utils\.generate_series\s*\(\s*(\d+)\s*\)\s*\}\}'
+        sql = re.sub(pattern, r'generate_series(1, \1)', sql)
+        
+        # dbt_utils.date_spine -> generate date range
+        pattern = r'\{\{\s*dbt_utils\.date_spine\s*\((.*?)\)\s*\}\}'
+        
+        def replace_date_spine(match):
+            # Simplified date_spine implementation
+            return """
+                SELECT DATE '2020-01-01' + INTERVAL (i) DAY AS date_day
+                FROM generate_series(0, 365) AS t(i)
+            """
+        
+        sql = re.sub(pattern, replace_date_spine, sql)
+        
+        # dbt_utils.pivot
+        pattern = r'\{\{\s*dbt_utils\.pivot\s*\((.*?)\)\s*\}\}'
+        sql = re.sub(pattern, '/* pivot macro - requires manual implementation */', sql)
+        
+        # dbt_utils.unpivot
+        pattern = r'\{\{\s*dbt_utils\.unpivot\s*\((.*?)\)\s*\}\}'
+        sql = re.sub(pattern, '/* unpivot macro - requires manual implementation */', sql)
+        
+        # dbt_utils.safe_add -> COALESCE addition
+        pattern = r'\{\{\s*dbt_utils\.safe_add\s*\(\s*\[(.*?)\]\s*\)\s*\}\}'
+        
+        def replace_safe_add(match):
+            columns = match.group(1)
+            cols = [c.strip().strip("'\"") for c in columns.split(',')]
+            return ' + '.join([f"COALESCE({col}, 0)" for col in cols])
+        
+        sql = re.sub(pattern, replace_safe_add, sql)
+        
+        # dbt_utils.star -> *
+        pattern = r'\{\{\s*dbt_utils\.star\s*\(.*?\)\s*\}\}'
+        sql = re.sub(pattern, '*', sql)
+        
+        # dbt_utils.get_column_values - returns empty, needs to be handled at runtime
+        pattern = r'\{\{\s*dbt_utils\.get_column_values\s*\(.*?\)\s*\}\}'
+        sql = re.sub(pattern, "/* get_column_values - implement at runtime */", sql)
+        
+        # dbt_utils.union_relations
+        pattern = r'\{\{\s*dbt_utils\.union_relations\s*\((.*?)\)\s*\}\}'
+        sql = re.sub(pattern, '/* union_relations - requires manual implementation */', sql)
+        
+        return sql
+    
+    def _translate_merge_statement(self, sql: str) -> str:
+        """Translate MERGE statement to DuckDB compatible operations"""
+        # DuckDB doesn't fully support MERGE, convert to DELETE + INSERT
+        # This is a simplified translation
+        
+        pattern = r'MERGE\s+INTO\s+(\S+)\s+(?:AS\s+)?(\w+)\s+USING\s+\((.*?)\)\s+(?:AS\s+)?(\w+)\s+ON\s+(.*?)\s+WHEN\s+MATCHED'
+        
+        match = re.search(pattern, sql, re.IGNORECASE | re.DOTALL)
+        if match:
+            target = match.group(1)
+            target_alias = match.group(2)
+            source_query = match.group(3)
+            source_alias = match.group(4)
+            join_condition = match.group(5)
+            
+            # Extract WHEN MATCHED THEN UPDATE
+            update_pattern = r'WHEN\s+MATCHED\s+THEN\s+UPDATE\s+SET\s+(.*?)(?=WHEN\s+NOT|$)'
+            update_match = re.search(update_pattern, sql, re.IGNORECASE | re.DOTALL)
+            
+            # Extract WHEN NOT MATCHED THEN INSERT
+            insert_pattern = r'WHEN\s+NOT\s+MATCHED\s+THEN\s+INSERT\s*\((.*?)\)\s*VALUES\s*\((.*?)\)'
+            insert_match = re.search(insert_pattern, sql, re.IGNORECASE | re.DOTALL)
+            
+            # Build replacement SQL
+            if update_match and insert_match:
+                # Full upsert - use DELETE + INSERT approach
+                return f"""
+                    -- Delete existing matches
+                    DELETE FROM {target}
+                    WHERE EXISTS (
+                        SELECT 1 FROM ({source_query}) {source_alias}
+                        WHERE {join_condition.replace(target_alias + '.', target + '.')}
+                    );
+                    
+                    -- Insert all from source
+                    INSERT INTO {target}
+                    {source_query};
+                """
+        
+        return sql
+    
+    def _translate_copy_grants(self, sql: str) -> str:
+        """Remove COPY GRANTS clause (Snowflake-specific)"""
+        sql = re.sub(r'\bCOPY\s+GRANTS\b', '', sql, flags=re.IGNORECASE)
+        return sql
+    
+    def _translate_transient(self, sql: str) -> str:
+        """Remove TRANSIENT keyword (Snowflake-specific)"""
+        sql = re.sub(r'\bTRANSIENT\s+', '', sql, flags=re.IGNORECASE)
+        return sql
+    
+    def _translate_clustering(self, sql: str) -> str:
+        """Remove CLUSTER BY clause (Snowflake-specific)"""
+        sql = re.sub(r'\bCLUSTER\s+BY\s*\([^)]*\)', '', sql, flags=re.IGNORECASE)
+        return sql
+    
+    def _translate_data_retention(self, sql: str) -> str:
+        """Remove DATA_RETENTION_TIME_IN_DAYS clause (Snowflake-specific)"""
+        sql = re.sub(r'\bDATA_RETENTION_TIME_IN_DAYS\s*=\s*\d+', '', sql, flags=re.IGNORECASE)
+        return sql
+
+
+def translate_dbt_sql(sql: str) -> str:
+    """Translate dbt-style SQL to DuckDB"""
+    translator = DbtSqlTranslator()
+    return translator.translate(sql)

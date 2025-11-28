@@ -94,12 +94,16 @@ class QueryExecutor:
                     "rowcount": len(data)
                 }
             else:
-                rowcount = result.fetchone()[0] if result.description else 0
+                rowcount = 0
+                if result.description:
+                    row = result.fetchone()
+                    if row is not None and len(row) > 0:
+                        rowcount = row[0] if isinstance(row[0], int) else 0
                 return {
                     "success": True,
                     "data": [],
                     "columns": [],
-                    "rowcount": rowcount if isinstance(rowcount, int) else 0
+                    "rowcount": rowcount
                 }
         
         except Exception as e:

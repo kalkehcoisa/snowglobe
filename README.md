@@ -1,4 +1,4 @@
-# ❄️ Snowglobe - Enhanced Local Snowflake Emulator
+# ❄️ Snowglobe - Local Snowflake Emulator
 
 <div align="center">
 
@@ -8,7 +8,7 @@
 ![HTTPS](https://img.shields.io/badge/HTTPS-Enabled-success?logo=lock)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-**A production-ready local Snowflake emulator with SSL/TLS support and a modern web interface**
+**A local Snowflake emulator with SSL/TLS support and a modern web interface**
 
 [Features](#features) • [Quick Start](#quick-start) • [HTTPS Setup](#https-setup) • [Usage](#usage) • [Documentation](#documentation)
 
@@ -18,7 +18,7 @@
 
 ## 🎯 Overview
 
-Snowglobe is a **local Snowflake emulator** designed for Python developers. This enhanced version includes:
+Snowglobe is a **local Snowflake emulator** designed for Python developers. This version includes:
 
 - ✅ **SSL/TLS/HTTPS Support** - Full HTTPS encryption, matching Snowflake's security standards
 - ✅ **Modern Web UI** - Side menu navigation with multiple views
@@ -28,10 +28,22 @@ Snowglobe is a **local Snowflake emulator** designed for Python developers. This
 - ✅ **Session Management** - Monitor active connections
 - ✅ **Real-time Stats** - Performance metrics and monitoring
 - ✅ **Docker Support** - Easy deployment with Docker Compose
+- ✅ **Full dbt Support** - Models, seeds, tests, snapshots, and sources
 
 ---
 
 ## 🚀 Features
+
+Snowglobe now includes:
+
+- ⚡ **Hybrid Tables (Unistore)** - ACID-compliant transactional + analytical workloads
+- 🔄 **Dynamic Tables** - Continuous data loading with automatic refresh
+- 📁 **File Operations** - Complete PUT, GET, COPY INTO, REMOVE support
+- ☁️ **AWS Integrations** - S3, Glue, Kinesis, SageMaker, EMR, MWAA
+- 🎯 **Data Quality (Soda)** - Automated data validation and quality checks
+- 🔄 **Schema Migrations (Flyway)** - Version-controlled database migrations
+- 🔧 **200+ SQL Functions** - Comprehensive Snowflake function support
+- 🔁 **Automated Replication** - Sync from production Snowflake to local
 
 ### 🔒 Security & HTTPS
 
@@ -63,6 +75,16 @@ Snowglobe is a **local Snowflake emulator** designed for Python developers. This
 - **Query History View** - Filter and analyze past queries
 - **Session Explorer** - Monitor active connections
 - **Settings Panel** - Configure and view system settings
+
+### 🔧 Full dbt Support
+
+- **Model Materializations** - table, view, incremental, ephemeral
+- **Sources & Seeds** - Define sources, load CSV seeds
+- **Testing** - Schema tests (unique, not_null, etc.) and singular tests
+- **Snapshots** - SCD Type 2 with timestamp/check strategies
+- **Jinja Compilation** - ref(), source(), var(), config() support
+- **Documentation** - Generate dbt docs compatible manifests
+- **Lineage Tracking** - Model dependency graphs
 
 ---
 
@@ -366,6 +388,22 @@ uvicorn snowglobe_server.server:app --reload --port 8084
 | `/api/stats` | GET | Get server statistics |
 | `/health` | GET | Health check |
 
+### dbt API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/dbt/status` | GET | Check dbt adapter status |
+| `/api/dbt/compile` | POST | Compile SQL with dbt context |
+| `/api/dbt/run` | POST | Run dbt models |
+| `/api/dbt/seed` | POST | Load seed data |
+| `/api/dbt/test` | POST | Run dbt tests |
+| `/api/dbt/snapshot` | POST | Run snapshots |
+| `/api/dbt/models` | GET/POST | List or register models |
+| `/api/dbt/sources` | GET/POST | List or register sources |
+| `/api/dbt/models/{name}/lineage` | GET | Get model lineage |
+| `/api/dbt/docs` | GET | Generate documentation |
+| `/api/dbt/profiles` | GET | Get profiles.yml config |
+
 ---
 
 ## 🎨 Screenshots
@@ -391,6 +429,72 @@ uvicorn snowglobe_server.server:app --reload --port 8084
 
 ---
 
+## 🔧 dbt Integration
+
+Snowglobe provides full dbt support for local development and testing.
+
+### Quick dbt Setup
+
+1. **Get profiles.yml configuration:**
+```bash
+curl http://localhost:8084/api/dbt/profiles
+```
+
+2. **Configure your profile** (`~/.dbt/profiles.yml`):
+```yaml
+snowglobe:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: localhost
+      user: dbt_user
+      password: any_password
+      database: SNOWGLOBE
+      schema: PUBLIC
+      warehouse: COMPUTE_WH
+      role: ACCOUNTADMIN
+      host: localhost
+      port: 8443
+      protocol: https
+      insecure_mode: true
+```
+
+3. **Run dbt commands:**
+```bash
+dbt run
+dbt test
+dbt seed
+dbt docs generate
+```
+
+### Using the API
+
+```python
+import requests
+
+# Register a source
+requests.post("http://localhost:8084/api/dbt/sources", json={
+    "name": "raw",
+    "database": "SNOWGLOBE",
+    "schema_name": "RAW",
+    "tables": [{"name": "customers"}]
+})
+
+# Register and run a model
+requests.post("http://localhost:8084/api/dbt/models", json={
+    "name": "stg_customers",
+    "sql": "SELECT * FROM {{ source('raw', 'customers') }}",
+    "materialization": "view"
+})
+
+requests.post("http://localhost:8084/api/dbt/models/stg_customers/run")
+```
+
+For complete dbt documentation, see [DBT_GUIDE.md](DBT_GUIDE.md).
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -407,7 +511,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - Built with FastAPI and DuckDB
 - Frontend powered by Vue.js
-- Inspired by Snowflake's architecture
 
 ---
 

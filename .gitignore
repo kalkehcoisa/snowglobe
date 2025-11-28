@@ -5,6 +5,8 @@ __pycache__/
 
 # Project files
 certs/
+create_tar.sh
+sync_tar.sh
 
 # C extensions
 *.so

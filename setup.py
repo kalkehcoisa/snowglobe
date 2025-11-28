@@ -11,11 +11,11 @@ setup(
     name="snowglobe",
     version="0.1.0",
     author="Snowglobe Contributors",
-    author_email="snowglobe@example.com",
+    author_email="jaymetosineto@gmail.com",
     description="Local Snowflake Emulator for Python Developers",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/snowglobe/snowglobe",
+    url="https://github.com/kalkehcoisa/snowglobe",
     packages=find_packages(include=["snowglobe_server", "snowglobe_server.*"]),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -63,8 +63,8 @@ setup(
         ],
     },
     project_urls={
-        "Bug Reports": "https://github.com/snowglobe/snowglobe/issues",
-        "Source": "https://github.com/snowglobe/snowglobe",
-        "Documentation": "https://github.com/snowglobe/snowglobe/wiki",
+        "Bug Reports": "https://github.com/kalkehcoisa/snowglobe/issues",
+        "Source": "https://github.com/kalkehcoisa/snowglobe",
+        "Documentation": "https://github.com/kalkehcoisa/snowglobe/wiki",
     },
 )
