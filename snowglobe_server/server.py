@@ -44,6 +44,9 @@ from .dbt_adapter import (
     generate_profiles_yml,
     generate_sample_project,
 )
+from .information_schema import InformationSchemaBuilder
+from .data_import import DataImporter
+from .workspace import WorkspaceManager
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +61,7 @@ data_dir = os.getenv("SNOWGLOBE_DATA_DIR", "/data")
 # Use new managers for better organization
 session_manager = SessionManager()
 query_history_manager = QueryHistoryManager(max_size=1000)
+workspace_manager = WorkspaceManager(data_dir)
 
 
 @asynccontextmanager
@@ -648,28 +652,35 @@ async def execute_query(request: Request):
 
 # ========== Worksheet Management Endpoints ==========
 
-# In-memory worksheet storage (persists for server lifetime)
-_worksheets_store: Dict[str, Dict[str, Any]] = {}
-_worksheet_counter = 0
-
 class WorksheetCreate(BaseModel):
     name: str
     sql: str = ""
     context: Optional[Dict[str, str]] = None
+    folder_id: Optional[str] = None
+    position: Optional[int] = None
 
 class WorksheetUpdate(BaseModel):
     name: Optional[str] = None
     sql: Optional[str] = None
     context: Optional[Dict[str, str]] = None
+    position: Optional[int] = None
+    is_favorite: Optional[bool] = None
+    tags: Optional[List[str]] = None
+    description: Optional[str] = None
+
+class WorksheetReorder(BaseModel):
+    worksheet_ids: List[str]
 
 
 @app.get("/api/worksheets")
 @handle_exceptions
-async def list_worksheets():
-    """List all worksheets"""
-    worksheets = list(_worksheets_store.values())
-    # Sort by created_at descending (most recent first)
-    worksheets.sort(key=lambda x: x.get("updated_at", x.get("created_at", "")), reverse=True)
+async def list_worksheets(workspace_id: str = None, folder_id: str = None):
+    """List all worksheets sorted by position (maintains order)"""
+    worksheets = workspace_manager.list_worksheets(
+        workspace_id=workspace_id,
+        folder_id=folder_id,
+        include_content=True
+    )
     return {"worksheets": worksheets, "count": len(worksheets)}
 
 
@@ -677,29 +688,20 @@ async def list_worksheets():
 @handle_exceptions
 async def create_worksheet(worksheet: WorksheetCreate):
     """Create a new worksheet"""
-    global _worksheet_counter
-    _worksheet_counter += 1
-    
-    worksheet_id = f"ws_{_worksheet_counter}_{uuid.uuid4().hex[:8]}"
-    now = datetime.utcnow().isoformat()
-    
-    new_worksheet = {
-        "id": worksheet_id,
-        "name": worksheet.name or f"Worksheet {_worksheet_counter}",
-        "sql": worksheet.sql or "",
-        "context": worksheet.context or {
+    new_worksheet = workspace_manager.create_worksheet(
+        name=worksheet.name or "New Worksheet",
+        sql=worksheet.sql or "",
+        folder_id=worksheet.folder_id,
+        context=worksheet.context or {
             "database": "SNOWGLOBE",
             "schema": "PUBLIC",
             "warehouse": "COMPUTE_WH",
             "role": "ACCOUNTADMIN"
         },
-        "created_at": now,
-        "updated_at": now,
-        "last_executed": None
-    }
+        position=worksheet.position
+    )
     
-    _worksheets_store[worksheet_id] = new_worksheet
-    logger.info(f"Created worksheet: {worksheet_id}")
+    logger.info(f"Created worksheet: {new_worksheet['id']}")
     return {"success": True, "worksheet": new_worksheet}
 
 
@@ -707,53 +709,105 @@ async def create_worksheet(worksheet: WorksheetCreate):
 @handle_exceptions
 async def get_worksheet(worksheet_id: str):
     """Get a specific worksheet"""
-    if worksheet_id not in _worksheets_store:
+    worksheet = workspace_manager.get_worksheet(worksheet_id)
+    if not worksheet:
         raise HTTPException(status_code=404, detail="Worksheet not found")
-    return {"worksheet": _worksheets_store[worksheet_id]}
+    
+    # Mark as recently accessed
+    workspace_manager.add_to_recent(worksheet_id)
+    
+    return {"worksheet": worksheet}
 
 
 @app.put("/api/worksheets/{worksheet_id}")
 @handle_exceptions
 async def update_worksheet(worksheet_id: str, worksheet: WorksheetUpdate):
     """Update a worksheet"""
-    if worksheet_id not in _worksheets_store:
+    updates = {}
+    if worksheet.name is not None:
+        updates['name'] = worksheet.name
+    if worksheet.sql is not None:
+        updates['sql'] = worksheet.sql
+    if worksheet.context is not None:
+        updates['context'] = worksheet.context
+    if worksheet.position is not None:
+        updates['position'] = worksheet.position
+    if worksheet.is_favorite is not None:
+        updates['is_favorite'] = worksheet.is_favorite
+    if worksheet.tags is not None:
+        updates['tags'] = worksheet.tags
+    if worksheet.description is not None:
+        updates['description'] = worksheet.description
+    
+    updated = workspace_manager.update_worksheet(worksheet_id, updates)
+    if not updated:
         raise HTTPException(status_code=404, detail="Worksheet not found")
     
-    stored = _worksheets_store[worksheet_id]
-    
-    if worksheet.name is not None:
-        stored["name"] = worksheet.name
-    if worksheet.sql is not None:
-        stored["sql"] = worksheet.sql
-    if worksheet.context is not None:
-        stored["context"] = worksheet.context
-    
-    stored["updated_at"] = datetime.utcnow().isoformat()
-    
     logger.info(f"Updated worksheet: {worksheet_id}")
-    return {"success": True, "worksheet": stored}
+    return {"success": True, "worksheet": updated}
 
 
 @app.delete("/api/worksheets/{worksheet_id}")
 @handle_exceptions
 async def delete_worksheet(worksheet_id: str):
     """Delete a worksheet"""
-    if worksheet_id not in _worksheets_store:
+    if not workspace_manager.delete_worksheet(worksheet_id):
         raise HTTPException(status_code=404, detail="Worksheet not found")
     
-    del _worksheets_store[worksheet_id]
     logger.info(f"Deleted worksheet: {worksheet_id}")
     return {"success": True, "message": f"Worksheet {worksheet_id} deleted"}
+
+
+@app.post("/api/worksheets/reorder")
+@handle_exceptions
+async def reorder_worksheets(reorder: WorksheetReorder):
+    """Reorder worksheets by setting positions based on list order"""
+    workspace_manager.reorder_worksheets(reorder.worksheet_ids)
+    return {"success": True, "message": "Worksheets reordered"}
+
+
+@app.post("/api/worksheets/{worksheet_id}/duplicate")
+@handle_exceptions
+async def duplicate_worksheet(worksheet_id: str, new_name: str = None):
+    """Duplicate a worksheet"""
+    new_worksheet = workspace_manager.duplicate_worksheet(worksheet_id, new_name)
+    if not new_worksheet:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    return {"success": True, "worksheet": new_worksheet}
+
+
+@app.post("/api/worksheets/{worksheet_id}/move")
+@handle_exceptions
+async def move_worksheet(worksheet_id: str, request: Request):
+    """Move a worksheet to a different folder"""
+    body = await request.json()
+    target_folder_id = body.get('folder_id')
+    target_workspace_id = body.get('workspace_id')
+    
+    moved = workspace_manager.move_worksheet(worksheet_id, target_folder_id, target_workspace_id)
+    if not moved:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    return {"success": True, "worksheet": moved}
+
+
+@app.post("/api/worksheets/{worksheet_id}/favorite")
+@handle_exceptions
+async def toggle_worksheet_favorite(worksheet_id: str):
+    """Toggle favorite status for a worksheet"""
+    is_favorite = workspace_manager.toggle_favorite(worksheet_id)
+    return {"success": True, "is_favorite": is_favorite}
 
 
 @app.post("/api/worksheets/{worksheet_id}/execute")
 @handle_exceptions
 async def execute_worksheet(worksheet_id: str, request: Request):
     """Execute the SQL in a worksheet and save results"""
-    if worksheet_id not in _worksheets_store:
+    worksheet = workspace_manager.get_worksheet(worksheet_id)
+    if not worksheet:
         raise HTTPException(status_code=404, detail="Worksheet not found")
     
-    worksheet = _worksheets_store[worksheet_id]
     sql = worksheet.get("sql", "").strip()
     
     if not sql:
@@ -784,9 +838,14 @@ async def execute_worksheet(worksheet_id: str, request: Request):
         result.get("error")
     )
     
-    # Update worksheet last_executed
-    worksheet["last_executed"] = datetime.utcnow().isoformat()
-    worksheet["updated_at"] = worksheet["last_executed"]
+    # Update worksheet execution info
+    workspace_manager.update_worksheet(worksheet_id, {
+        'last_executed': datetime.utcnow().isoformat(),
+        'execution_count': worksheet.get('execution_count', 0) + 1
+    })
+    
+    # Add to recent
+    workspace_manager.add_to_recent(worksheet_id)
     
     if result["success"]:
         return {
@@ -802,6 +861,600 @@ async def execute_worksheet(worksheet_id: str, request: Request):
             "error": result.get("error", "Unknown error"),
             "duration_ms": duration_ms
         }
+
+
+# ========== Workspace Management Endpoints ==========
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    description: str = ""
+    icon: str = "📁"
+
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+
+class FolderCreate(BaseModel):
+    name: str
+    workspace_id: str = None
+    parent_id: Optional[str] = None
+    icon: str = "📂"
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+    icon: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+@app.get("/api/workspaces")
+@handle_exceptions
+async def list_workspaces():
+    """List all workspaces"""
+    workspaces = workspace_manager.list_workspaces()
+    return {"workspaces": workspaces, "count": len(workspaces)}
+
+
+@app.post("/api/workspaces")
+@handle_exceptions
+async def create_workspace(workspace: WorkspaceCreate):
+    """Create a new workspace"""
+    new_workspace = workspace_manager.create_workspace(
+        name=workspace.name,
+        description=workspace.description,
+        icon=workspace.icon
+    )
+    return {"success": True, "workspace": new_workspace}
+
+
+@app.get("/api/workspaces/{workspace_id}")
+@handle_exceptions
+async def get_workspace(workspace_id: str):
+    """Get a specific workspace with its contents"""
+    workspace = workspace_manager.get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    # Get associated folders and worksheets
+    folders = workspace_manager.list_folders(workspace_id=workspace_id)
+    worksheets = workspace_manager.list_worksheets(workspace_id=workspace_id)
+    
+    return {
+        "workspace": workspace,
+        "folders": folders,
+        "worksheets": worksheets
+    }
+
+
+@app.put("/api/workspaces/{workspace_id}")
+@handle_exceptions
+async def update_workspace(workspace_id: str, workspace: WorkspaceUpdate):
+    """Update a workspace"""
+    updates = {}
+    if workspace.name is not None:
+        updates['name'] = workspace.name
+    if workspace.description is not None:
+        updates['description'] = workspace.description
+    if workspace.icon is not None:
+        updates['icon'] = workspace.icon
+    if workspace.settings is not None:
+        updates['settings'] = workspace.settings
+    
+    updated = workspace_manager.update_workspace(workspace_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    return {"success": True, "workspace": updated}
+
+
+@app.delete("/api/workspaces/{workspace_id}")
+@handle_exceptions
+async def delete_workspace(workspace_id: str):
+    """Delete a workspace"""
+    if not workspace_manager.delete_workspace(workspace_id):
+        raise HTTPException(status_code=400, detail="Cannot delete workspace (not found or is default)")
+    return {"success": True, "message": f"Workspace {workspace_id} deleted"}
+
+
+@app.get("/api/workspaces/{workspace_id}/export")
+@handle_exceptions
+async def export_workspace(workspace_id: str):
+    """Export a workspace with all its contents"""
+    data = workspace_manager.export_workspace(workspace_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return data
+
+
+@app.post("/api/workspaces/import")
+@handle_exceptions
+async def import_workspace(request: Request):
+    """Import a workspace from exported data"""
+    body = await request.json()
+    rename = body.pop('rename', None)
+    
+    workspace = workspace_manager.import_workspace(body, rename=rename)
+    if not workspace:
+        raise HTTPException(status_code=400, detail="Invalid workspace data")
+    
+    return {"success": True, "workspace": workspace}
+
+
+# ========== Folder Management Endpoints ==========
+
+@app.get("/api/folders")
+@handle_exceptions
+async def list_folders(workspace_id: str = None):
+    """List all folders, optionally filtered by workspace"""
+    folders = workspace_manager.list_folders(workspace_id=workspace_id)
+    return {"folders": folders, "count": len(folders)}
+
+
+@app.post("/api/folders")
+@handle_exceptions
+async def create_folder(folder: FolderCreate):
+    """Create a new folder"""
+    workspace_id = folder.workspace_id
+    if not workspace_id:
+        # Use default workspace
+        settings = workspace_manager.get_settings()
+        workspace_id = settings.get('default_workspace', 'default')
+    
+    new_folder = workspace_manager.create_folder(
+        workspace_id=workspace_id,
+        name=folder.name,
+        parent_id=folder.parent_id,
+        icon=folder.icon
+    )
+    
+    if not new_folder:
+        raise HTTPException(status_code=400, detail="Failed to create folder")
+    
+    return {"success": True, "folder": new_folder}
+
+
+@app.get("/api/folders/{folder_id}")
+@handle_exceptions
+async def get_folder(folder_id: str):
+    """Get a specific folder with its worksheets"""
+    folder = workspace_manager.get_folder(folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    worksheets = workspace_manager.list_worksheets(folder_id=folder_id)
+    
+    return {
+        "folder": folder,
+        "worksheets": worksheets
+    }
+
+
+@app.put("/api/folders/{folder_id}")
+@handle_exceptions
+async def update_folder(folder_id: str, folder: FolderUpdate):
+    """Update a folder"""
+    updates = {}
+    if folder.name is not None:
+        updates['name'] = folder.name
+    if folder.icon is not None:
+        updates['icon'] = folder.icon
+    if folder.parent_id is not None:
+        updates['parent_id'] = folder.parent_id
+    
+    updated = workspace_manager.update_folder(folder_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    return {"success": True, "folder": updated}
+
+
+@app.delete("/api/folders/{folder_id}")
+@handle_exceptions
+async def delete_folder(folder_id: str, move_to: str = None):
+    """Delete a folder, optionally moving worksheets to another folder"""
+    if not workspace_manager.delete_folder(folder_id, move_to=move_to):
+        raise HTTPException(status_code=400, detail="Cannot delete folder")
+    return {"success": True, "message": f"Folder {folder_id} deleted"}
+
+
+# ========== Recent & Favorites Endpoints ==========
+
+@app.get("/api/recent")
+@handle_exceptions
+async def get_recent_worksheets(limit: int = 10):
+    """Get recently accessed worksheets"""
+    recent = workspace_manager.get_recent(limit=limit)
+    return {"worksheets": recent, "count": len(recent)}
+
+
+@app.get("/api/favorites")
+@handle_exceptions
+async def get_favorite_worksheets():
+    """Get favorite worksheets"""
+    favorites = workspace_manager.get_favorites()
+    return {"worksheets": favorites, "count": len(favorites)}
+
+
+# ========== Search Endpoint ==========
+
+@app.get("/api/search")
+@handle_exceptions
+async def search_worksheets(q: str, workspace_id: str = None):
+    """Search worksheets by name, SQL content, or tags"""
+    results = workspace_manager.search_worksheets(q, workspace_id=workspace_id)
+    return {"results": results, "count": len(results), "query": q}
+
+
+# ========== Data Import Endpoints ==========
+
+@app.post("/api/import/file")
+@handle_exceptions
+async def import_file(request: Request):
+    """Import a data file (SQL, CSV, JSON, Parquet, notebook)"""
+    # Get content type
+    content_type = request.headers.get('content-type', '')
+    
+    if 'multipart/form-data' in content_type:
+        # Handle file upload
+        form = await request.form()
+        file = form.get('file')
+        if not file:
+            return {"success": False, "error": "No file provided"}
+        
+        filename = file.filename
+        content = await file.read()
+        
+        # Get optional options
+        options = {}
+        for key in ['table_name', 'database', 'schema', 'delimiter', 'encoding']:
+            if key in form:
+                options[key] = form[key]
+        
+        # Create importer
+        if session_manager.count() > 0:
+            first_session = next(iter(session_manager.sessions.values()))
+            executor = first_session["executor"]
+        else:
+            executor = QueryExecutor(data_dir)
+        
+        importer = DataImporter(executor)
+        result = importer.import_file_content(content, filename, options)
+        
+        return result
+    else:
+        # Handle JSON request with file path
+        body = await request.json()
+        file_path = body.get('file_path')
+        options = body.get('options', {})
+        
+        if not file_path:
+            return {"success": False, "error": "No file path provided"}
+        
+        # Create importer
+        if session_manager.count() > 0:
+            first_session = next(iter(session_manager.sessions.values()))
+            executor = first_session["executor"]
+        else:
+            executor = QueryExecutor(data_dir)
+        
+        importer = DataImporter(executor)
+        result = importer.import_file(file_path, options)
+        
+        return result
+
+
+@app.post("/api/import/sql")
+@handle_exceptions
+async def import_sql(request: Request):
+    """Import SQL content directly"""
+    body = await request.json()
+    sql_content = body.get('sql', '')
+    options = body.get('options', {})
+    
+    if not sql_content:
+        return {"success": False, "error": "No SQL content provided"}
+    
+    # Create importer
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    importer = DataImporter(executor)
+    
+    # Save SQL to temp file and import
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
+        f.write(sql_content)
+        temp_path = f.name
+    
+    try:
+        result = importer.import_sql_file(temp_path, options)
+        return result
+    finally:
+        os.unlink(temp_path)
+
+
+@app.post("/api/import/csv")
+@handle_exceptions
+async def import_csv_data(request: Request):
+    """Import CSV data directly"""
+    body = await request.json()
+    csv_content = body.get('csv', '')
+    options = body.get('options', {})
+    
+    if not csv_content:
+        return {"success": False, "error": "No CSV content provided"}
+    
+    # Create importer
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    importer = DataImporter(executor)
+    result = importer.import_file_content(
+        csv_content.encode('utf-8'),
+        options.get('filename', 'data.csv'),
+        options
+    )
+    
+    return result
+
+
+# ========== Information Schema Endpoints ==========
+
+@app.get("/api/information_schema/{view_name}")
+@handle_exceptions
+async def query_information_schema(view_name: str, database: str = None, 
+                                   schema: str = None, table: str = None):
+    """Query INFORMATION_SCHEMA views"""
+    # Create executor and info schema builder
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    info_schema = InformationSchemaBuilder(executor.metadata)
+    result = info_schema.query_information_schema(view_name, database, schema, table)
+    
+    return result
+
+
+@app.get("/api/information_schema")
+@handle_exceptions
+async def list_information_schema_views():
+    """List available INFORMATION_SCHEMA views"""
+    return {
+        "views": InformationSchemaBuilder.SCHEMA_VIEWS,
+        "count": len(InformationSchemaBuilder.SCHEMA_VIEWS)
+    }
+
+
+# ========== Stacked Filtering / Object Browser Endpoints ==========
+
+@app.get("/api/browser/databases")
+@handle_exceptions
+async def browser_list_databases():
+    """Get all databases for the object browser"""
+    if session_manager.count() == 0:
+        executor = QueryExecutor(data_dir)
+        databases = executor.metadata.list_databases()
+        executor.close()
+    else:
+        first_session = next(iter(session_manager.sessions.values()))
+        databases = first_session["executor"].metadata.list_databases()
+    
+    return {
+        "databases": databases,
+        "count": len(databases)
+    }
+
+
+@app.get("/api/browser/databases/{database}/schemas")
+@handle_exceptions
+async def browser_list_schemas(database: str):
+    """Get all schemas for a database (for stacked filtering)"""
+    if session_manager.count() == 0:
+        executor = QueryExecutor(data_dir)
+        try:
+            schemas = executor.metadata.list_schemas(database.upper())
+        finally:
+            executor.close()
+    else:
+        first_session = next(iter(session_manager.sessions.values()))
+        schemas = first_session["executor"].metadata.list_schemas(database.upper())
+    
+    return {
+        "database": database.upper(),
+        "schemas": schemas,
+        "count": len(schemas)
+    }
+
+
+@app.get("/api/browser/databases/{database}/schemas/{schema_name}/objects")
+@handle_exceptions
+async def browser_list_objects(database: str, schema_name: str, 
+                               object_type: str = None):
+    """Get all objects (tables, views) in a schema (for stacked filtering)"""
+    if session_manager.count() == 0:
+        executor = QueryExecutor(data_dir)
+        metadata = executor.metadata
+        close_executor = True
+    else:
+        first_session = next(iter(session_manager.sessions.values()))
+        metadata = first_session["executor"].metadata
+        close_executor = False
+    
+    try:
+        db_upper = database.upper()
+        schema_upper = schema_name.upper()
+        
+        result = {
+            "database": db_upper,
+            "schema": schema_upper,
+            "objects": []
+        }
+        
+        # Get tables
+        if not object_type or object_type.upper() == 'TABLE':
+            tables = metadata.list_tables(db_upper, schema_upper)
+            for table in tables:
+                result["objects"].append({
+                    "name": table["name"],
+                    "type": "TABLE",
+                    "created_at": table["created_at"],
+                    "row_count": table.get("row_count", 0),
+                    "columns": table.get("columns", [])
+                })
+        
+        # Get views
+        if not object_type or object_type.upper() == 'VIEW':
+            views = metadata.list_views(db_upper, schema_upper)
+            for view in views:
+                result["objects"].append({
+                    "name": view["name"],
+                    "type": "VIEW",
+                    "created_at": view["created_at"],
+                    "definition": view.get("definition", "")
+                })
+        
+        result["count"] = len(result["objects"])
+        return result
+        
+    finally:
+        if close_executor:
+            executor.close()
+
+
+@app.get("/api/browser/databases/{database}/schemas/{schema_name}/tables/{table_name}")
+@handle_exceptions
+async def browser_get_table_details(database: str, schema_name: str, table_name: str):
+    """Get detailed information about a specific table"""
+    if session_manager.count() == 0:
+        executor = QueryExecutor(data_dir)
+        metadata = executor.metadata
+        close_executor = True
+    else:
+        first_session = next(iter(session_manager.sessions.values()))
+        metadata = first_session["executor"].metadata
+        close_executor = False
+    
+    try:
+        table_info = metadata.get_table_info(
+            database.upper(), 
+            schema_name.upper(), 
+            table_name.upper()
+        )
+        
+        if not table_info:
+            raise HTTPException(status_code=404, detail="Table not found")
+        
+        return {
+            "database": database.upper(),
+            "schema": schema_name.upper(),
+            "table": table_info
+        }
+        
+    finally:
+        if close_executor:
+            executor.close()
+
+
+@app.get("/api/browser/search")
+@handle_exceptions
+async def browser_search_objects(q: str, database: str = None, 
+                                  schema: str = None, object_type: str = None):
+    """Search for database objects by name (for quick filtering)"""
+    if session_manager.count() == 0:
+        executor = QueryExecutor(data_dir)
+        metadata = executor.metadata
+        close_executor = True
+    else:
+        first_session = next(iter(session_manager.sessions.values()))
+        metadata = first_session["executor"].metadata
+        close_executor = False
+    
+    try:
+        query = q.upper()
+        results = []
+        
+        databases = metadata.list_databases()
+        if database:
+            databases = [d for d in databases if d['name'] == database.upper()]
+        
+        for db in databases:
+            # Search in database name
+            if query in db['name']:
+                results.append({
+                    "name": db['name'],
+                    "type": "DATABASE",
+                    "full_name": db['name']
+                })
+            
+            try:
+                schemas = metadata.list_schemas(db['name'])
+                if schema:
+                    schemas = [s for s in schemas if s['name'] == schema.upper()]
+                
+                for sch in schemas:
+                    # Search in schema name
+                    if query in sch['name']:
+                        results.append({
+                            "name": sch['name'],
+                            "type": "SCHEMA",
+                            "database": db['name'],
+                            "full_name": f"{db['name']}.{sch['name']}"
+                        })
+                    
+                    # Search in tables
+                    if not object_type or object_type.upper() == 'TABLE':
+                        try:
+                            tables = metadata.list_tables(db['name'], sch['name'])
+                            for table in tables:
+                                if query in table['name']:
+                                    results.append({
+                                        "name": table['name'],
+                                        "type": "TABLE",
+                                        "database": db['name'],
+                                        "schema": sch['name'],
+                                        "full_name": f"{db['name']}.{sch['name']}.{table['name']}"
+                                    })
+                        except ValueError:
+                            pass
+                    
+                    # Search in views
+                    if not object_type or object_type.upper() == 'VIEW':
+                        try:
+                            views = metadata.list_views(db['name'], sch['name'])
+                            for view in views:
+                                if query in view['name']:
+                                    results.append({
+                                        "name": view['name'],
+                                        "type": "VIEW",
+                                        "database": db['name'],
+                                        "schema": sch['name'],
+                                        "full_name": f"{db['name']}.{sch['name']}.{view['name']}"
+                                    })
+                        except ValueError:
+                            pass
+                            
+            except ValueError:
+                pass
+        
+        return {
+            "results": results[:50],  # Limit results
+            "count": len(results),
+            "query": q
+        }
+        
+    finally:
+        if close_executor:
+            executor.close()
 
 
 # ========== Server Logs Endpoints ==========

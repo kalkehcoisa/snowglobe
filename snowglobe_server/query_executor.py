@@ -8,6 +8,7 @@ import os
 from typing import List, Dict, Any, Optional, Tuple
 from .sql_translator import SnowflakeToDuckDBTranslator
 from .metadata import MetadataStore
+from .information_schema import InformationSchemaBuilder
 
 
 class QueryExecutor:
@@ -21,6 +22,7 @@ class QueryExecutor:
         self.conn = duckdb.connect(self.db_path)
         self.translator = SnowflakeToDuckDBTranslator()
         self.metadata = MetadataStore(data_dir)
+        self.information_schema = InformationSchemaBuilder(self.metadata)
         
         # Current context
         self.current_database = "SNOWGLOBE"
@@ -468,6 +470,59 @@ class QueryExecutor:
                 del self.session_vars[var_name]
             return {"success": True, "data": [], "columns": [], "rowcount": 0,
                     "message": f"Variable {var_name} unset"}
+        
+        # SELECT FROM INFORMATION_SCHEMA
+        match = re.match(
+            r'SELECT\s+(.+?)\s+FROM\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\.)?INFORMATION_SCHEMA\.([a-zA-Z_][a-zA-Z0-9_]*)',
+            sql, re.IGNORECASE | re.DOTALL
+        )
+        if match:
+            columns_clause = match.group(1)
+            database = match.group(2) or self.current_database
+            view_name = match.group(3).upper()
+            
+            # Parse WHERE clause for filters
+            where_match = re.search(r'WHERE\s+(.+?)(?:ORDER|LIMIT|$)', sql, re.IGNORECASE | re.DOTALL)
+            filters = {}
+            if where_match:
+                where_clause = where_match.group(1)
+                # Simple filter parsing for equality conditions
+                for filter_match in re.finditer(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*'([^']*)'", where_clause):
+                    filters[filter_match.group(1).upper()] = filter_match.group(2)
+            
+            result = self.information_schema.query_information_schema(
+                view_name, 
+                database=database,
+                schema=filters.get('TABLE_SCHEMA') or filters.get('SCHEMA_NAME'),
+                table=filters.get('TABLE_NAME'),
+                filters=filters
+            )
+            
+            if result['success'] and result['data']:
+                # Handle SELECT * vs specific columns
+                if columns_clause.strip() == '*':
+                    return result
+                else:
+                    # Filter to requested columns
+                    requested_cols = [c.strip().upper() for c in columns_clause.split(',')]
+                    col_indices = []
+                    new_columns = []
+                    for req_col in requested_cols:
+                        if req_col in result['columns']:
+                            idx = result['columns'].index(req_col)
+                            col_indices.append(idx)
+                            new_columns.append(req_col)
+                    
+                    if col_indices:
+                        new_data = [[row[i] for i in col_indices] for row in result['data']]
+                        return {
+                            'success': True,
+                            'data': new_data,
+                            'columns': new_columns,
+                            'rowcount': len(new_data)
+                        }
+            
+            return result
         
         # LIST @stage (stage operations)
         match = re.match(r'LIST\s+@([a-zA-Z_][a-zA-Z0-9_]*)', sql, re.IGNORECASE)

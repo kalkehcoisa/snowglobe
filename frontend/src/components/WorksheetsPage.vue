@@ -9,14 +9,20 @@
     <template v-else>
       <!-- Worksheet Tabs -->
       <div class="worksheet-tabs">
-        <div class="tabs-container">
+        <div class="tabs-container" ref="tabsContainer">
           <div 
             v-for="(ws, index) in worksheets" 
             :key="ws.id"
-            :class="['worksheet-tab', { active: activeWorksheetId === ws.id }]"
+            :class="['worksheet-tab', { active: activeWorksheetId === ws.id, dragging: draggedIndex === index }]"
+            :draggable="true"
             @click="selectWorksheet(ws.id)"
+            @dragstart="handleDragStart($event, index)"
+            @dragover="handleDragOver($event, index)"
+            @dragend="handleDragEnd"
+            @drop="handleDrop($event, index)"
           >
-            <span class="tab-icon">📝</span>
+            <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
+            <span class="tab-icon">{{ ws.is_favorite ? '⭐' : '📝' }}</span>
             <input 
               v-if="ws.isEditing"
               v-model="ws.name"
@@ -38,6 +44,12 @@
         </div>
         <div class="tabs-actions">
           <span v-if="isSaving" class="save-indicator">💾</span>
+          <button class="btn-icon-small" @click="toggleFavorite" title="Toggle Favorite" v-if="activeWorksheet">
+            {{ activeWorksheet.is_favorite ? '⭐' : '☆' }}
+          </button>
+          <button class="btn-icon-small" @click="duplicateWorksheet" title="Duplicate" v-if="activeWorksheet">
+            📋
+          </button>
           <button class="add-worksheet-btn" @click="addWorksheet" title="New Worksheet">
             <span>+</span>
           </button>
@@ -225,7 +237,10 @@ export default {
       pageSize: 100,
       isLoading: true,
       saveTimeout: null,
-      isSaving: false
+      isSaving: false,
+      // Drag and drop for reordering
+      draggedIndex: null,
+      dragOverIndex: null
     }
   },
   computed: {
@@ -264,6 +279,7 @@ export default {
       this.isLoading = true
       try {
         const response = await axios.get('/api/worksheets')
+        // Worksheets are already sorted by position from server
         const serverWorksheets = response.data.worksheets.map(ws => ({
           ...ws,
           result: null,
@@ -272,7 +288,10 @@ export default {
         
         if (serverWorksheets.length > 0) {
           this.worksheets = serverWorksheets
-          this.activeWorksheetId = serverWorksheets[0].id
+          // Keep active worksheet if it still exists, otherwise select first
+          if (!this.activeWorksheetId || !serverWorksheets.find(ws => ws.id === this.activeWorksheetId)) {
+            this.activeWorksheetId = serverWorksheets[0].id
+          }
         } else {
           // Create a default worksheet if none exist
           await this.addWorksheet()
@@ -291,8 +310,10 @@ export default {
             warehouse: 'COMPUTE_WH',
             role: 'ACCOUNTADMIN'
           },
+          position: 0,
           lastExecuted: null,
-          isEditing: false
+          isEditing: false,
+          is_favorite: false
         }]
         this.activeWorksheetId = 'local_1'
       } finally {
@@ -564,6 +585,99 @@ export default {
       a.download = `${this.activeWorksheet.name}_${Date.now()}.csv`
       a.click()
       window.URL.revokeObjectURL(url)
+    },
+    
+    // Drag and drop for reordering worksheets
+    handleDragStart(event, index) {
+      this.draggedIndex = index
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', index)
+      // Add visual feedback
+      event.target.classList.add('dragging')
+    },
+    
+    handleDragOver(event, index) {
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'move'
+      this.dragOverIndex = index
+    },
+    
+    handleDragEnd() {
+      this.draggedIndex = null
+      this.dragOverIndex = null
+    },
+    
+    async handleDrop(event, dropIndex) {
+      event.preventDefault()
+      
+      if (this.draggedIndex === null || this.draggedIndex === dropIndex) {
+        return
+      }
+      
+      // Reorder worksheets locally
+      const worksheetsCopy = [...this.worksheets]
+      const [draggedItem] = worksheetsCopy.splice(this.draggedIndex, 1)
+      worksheetsCopy.splice(dropIndex, 0, draggedItem)
+      
+      // Update positions
+      worksheetsCopy.forEach((ws, idx) => {
+        ws.position = idx
+      })
+      
+      this.worksheets = worksheetsCopy
+      
+      // Save new order to server
+      try {
+        await axios.post('/api/worksheets/reorder', {
+          worksheet_ids: this.worksheets.map(ws => ws.id)
+        })
+      } catch (error) {
+        console.error('Failed to save worksheet order:', error)
+      }
+      
+      this.draggedIndex = null
+      this.dragOverIndex = null
+    },
+    
+    async toggleFavorite() {
+      if (!this.activeWorksheet || this.activeWorksheet.id.startsWith('local_')) return
+      
+      try {
+        const response = await axios.post(`/api/worksheets/${this.activeWorksheet.id}/favorite`)
+        this.activeWorksheet.is_favorite = response.data.is_favorite
+      } catch (error) {
+        console.error('Failed to toggle favorite:', error)
+      }
+    },
+    
+    async duplicateWorksheet() {
+      if (!this.activeWorksheet) return
+      
+      try {
+        const response = await axios.post(`/api/worksheets/${this.activeWorksheet.id}/duplicate`)
+        const newWorksheet = {
+          ...response.data.worksheet,
+          result: null,
+          isEditing: false
+        }
+        this.worksheets.push(newWorksheet)
+        this.activeWorksheetId = newWorksheet.id
+      } catch (error) {
+        console.error('Failed to duplicate worksheet:', error)
+        // Fallback to local duplicate
+        const copy = {
+          id: `local_${Date.now()}`,
+          name: `Copy of ${this.activeWorksheet.name}`,
+          sql: this.activeWorksheet.sql,
+          context: { ...this.activeWorksheet.context },
+          result: null,
+          isEditing: false,
+          position: this.worksheets.length,
+          is_favorite: false
+        }
+        this.worksheets.push(copy)
+        this.activeWorksheetId = copy.id
+      }
     }
   },
   async mounted() {
@@ -646,6 +760,38 @@ export default {
   white-space: nowrap;
   min-width: 120px;
   max-width: 200px;
+  transition: transform 0.2s, opacity 0.2s;
+}
+
+.worksheet-tab.dragging {
+  opacity: 0.5;
+  transform: scale(0.95);
+}
+
+.drag-handle {
+  cursor: grab;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 0 0.25rem;
+  user-select: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.btn-icon-small {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0.25rem;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.btn-icon-small:hover {
+  opacity: 1;
 }
 
 .worksheet-tab.active {

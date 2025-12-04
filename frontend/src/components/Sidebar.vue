@@ -114,10 +114,8 @@ export default {
     },
     dataItems() {
       return [
-        { id: 'databases', label: 'Databases', icon: '🗄️' },
-        { id: 'schemas', label: 'Schemas', icon: '📁' },
-        { id: 'tables', label: 'Tables', icon: '📊' },
-        { id: 'views', label: 'Views', icon: '👁️' },
+        { id: 'databases', label: 'Object Browser', icon: '🗄️' },
+        { id: 'import', label: 'Import Data', icon: '📥' },
         { id: 'stages', label: 'Stages', icon: '📦' },
       ]
     },

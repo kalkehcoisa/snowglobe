@@ -69,45 +69,17 @@
             v-if="activeView === 'logs'" 
           />
           
-          <!-- Database Explorer View -->
-          <DatabaseExplorer 
-            v-if="activeView === 'databases'" 
-            :databases="databases" 
-            @refresh="fetchDatabases" 
+          <!-- Database Explorer View (new stacked browser) -->
+          <ObjectBrowserNew
+            v-if="activeView === 'databases'"
+            @open-worksheet="openInWorksheet"
+            @preview-data="previewData"
           />
-
-          <!-- Tables Browser -->
-          <ObjectBrowser
-            v-if="activeView === 'tables'"
-            type="tables"
-            title="Tables"
-            icon="📊"
-            :objects="tables"
-            @refresh="fetchTables"
-            @preview-data="previewTableData"
-            @describe-object="describeTable"
-          />
-
-          <!-- Views Browser -->
-          <ObjectBrowser
-            v-if="activeView === 'views'"
-            type="views"
-            title="Views"
-            icon="👁️"
-            :objects="views"
-            @refresh="fetchViews"
-          />
-
-          <!-- Schemas Browser -->
-          <ObjectBrowser
-            v-if="activeView === 'schemas'"
-            type="schemas"
-            title="Schemas"
-            icon="📁"
-            :objects="schemas"
-            :canDrillDown="true"
-            @refresh="fetchSchemas"
-            @drill-down="drillDownSchema"
+          
+          <!-- Data Import View -->
+          <DataImport
+            v-if="activeView === 'import'"
+            @import-complete="handleImportComplete"
           />
 
           <!-- Stages Browser -->
@@ -168,8 +140,10 @@ import QueryHistoryPanel from './components/QueryHistoryPanel.vue'
 import SessionsPanel from './components/SessionsPanel.vue'
 import DatabaseExplorer from './components/DatabaseExplorer.vue'
 import ObjectBrowser from './components/ObjectBrowser.vue'
+import ObjectBrowserNew from './components/ObjectBrowserNew.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import LogsPage from './components/LogsPage.vue'
+import DataImport from './components/DataImport.vue'
 
 export default {
   name: 'App',
@@ -181,8 +155,10 @@ export default {
     SessionsPanel,
     DatabaseExplorer,
     ObjectBrowser,
+    ObjectBrowserNew,
     SettingsPanel,
-    LogsPage
+    LogsPage,
+    DataImport
   },
   data() {
     return {
@@ -344,6 +320,26 @@ export default {
     drillDownSchema(schema) {
       // Navigate to tables filtered by schema
       this.activeView = 'tables'
+    },
+    openInWorksheet(data) {
+      // Navigate to worksheets and create new worksheet with SQL
+      this.activeView = 'worksheets'
+      // The WorksheetsPage will handle the new worksheet creation via event
+      this.$nextTick(() => {
+        // This could be improved with a proper store/bus
+        console.log('Open in worksheet:', data)
+      })
+    },
+    previewData(data) {
+      // Navigate to worksheets and execute preview query
+      this.activeView = 'worksheets'
+      this.$nextTick(() => {
+        console.log('Preview data:', data)
+      })
+    },
+    handleImportComplete(result) {
+      // Refresh data after import
+      this.fetchAll()
     },
     startAutoRefresh() {
       this.refreshInterval = setInterval(() => {
