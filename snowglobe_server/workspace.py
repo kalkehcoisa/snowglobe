@@ -437,6 +437,7 @@ class WorkspaceManager:
                 'description': '',
                 'version': 1,
                 'versions': [],  # Version history
+                'worksheet_type': 'sql',  # 'sql' or 'python'
             }
             
             self._data['worksheets'][worksheet_id] = worksheet
@@ -524,7 +525,7 @@ class WorkspaceManager:
             # Update allowed fields
             allowed_fields = ['name', 'sql', 'context', 'folder_id', 'position',
                             'is_favorite', 'tags', 'description', 'last_executed',
-                            'execution_count']
+                            'execution_count', 'worksheet_type']
             for key in allowed_fields:
                 if key in updates:
                     worksheet[key] = updates[key]

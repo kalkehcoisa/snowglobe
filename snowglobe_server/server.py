@@ -47,6 +47,9 @@ from .dbt_adapter import (
 from .information_schema import InformationSchemaBuilder
 from .data_import import DataImporter
 from .workspace import WorkspaceManager
+from .python_worksheet import PythonWorksheetExecutor, PYTHON_TEMPLATES
+from .data_export import DataExporter, EXPORT_FORMATS
+from .object_management import ObjectManager
 
 # Configure logging
 logging.basicConfig(
@@ -2207,6 +2210,674 @@ async def dbt_clear_cache():
         "success": True,
         "message": "dbt adapter cache cleared",
     }
+
+
+# ==================== Python Worksheet Endpoints ====================
+
+class PythonWorksheetCreate(BaseModel):
+    name: str
+    code: str = ""
+    context: Optional[Dict[str, str]] = None
+    folder_id: Optional[str] = None
+    position: Optional[int] = None
+
+
+class PythonWorksheetExecuteRequest(BaseModel):
+    code: str
+    context: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/python-worksheets/templates")
+@handle_exceptions
+async def get_python_templates():
+    """Get available Python worksheet templates"""
+    return {
+        "templates": [
+            {"id": k, "name": k.replace("_", " ").title(), "code": v}
+            for k, v in PYTHON_TEMPLATES.items()
+        ],
+        "count": len(PYTHON_TEMPLATES)
+    }
+
+
+@app.post("/api/python-worksheets")
+@handle_exceptions
+async def create_python_worksheet(worksheet: PythonWorksheetCreate):
+    """Create a new Python worksheet"""
+    # Use workspace manager to create worksheet with type=python
+    new_worksheet = workspace_manager.create_worksheet(
+        name=worksheet.name or "Python Worksheet",
+        sql=worksheet.code or "",  # Store code in sql field
+        folder_id=worksheet.folder_id,
+        context=worksheet.context or {
+            "database": "SNOWGLOBE",
+            "schema": "PUBLIC",
+            "warehouse": "COMPUTE_WH",
+            "role": "ACCOUNTADMIN"
+        },
+        position=worksheet.position
+    )
+    
+    # Mark as Python worksheet
+    workspace_manager.update_worksheet(new_worksheet['id'], {
+        'worksheet_type': 'python',
+        'description': 'Python Worksheet'
+    })
+    
+    logger.info(f"Created Python worksheet: {new_worksheet['id']}")
+    return {"success": True, "worksheet": new_worksheet}
+
+
+@app.post("/api/python-worksheets/execute")
+@handle_exceptions
+async def execute_python_worksheet(request: PythonWorksheetExecuteRequest):
+    """Execute Python code in a worksheet context"""
+    start_time = datetime.utcnow()
+    
+    if not request.code or not request.code.strip():
+        return {"success": False, "error": "No code provided"}
+    
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+        session_id = first_session["session_id"]
+    else:
+        executor = QueryExecutor(data_dir)
+        session_id = "python-temp"
+    
+    # Create Python worksheet executor
+    py_executor = PythonWorksheetExecutor(executor)
+    
+    # Execute the code
+    result = py_executor.execute(request.code, request.context)
+    
+    # Add to query history (mark as Python)
+    end_time = datetime.utcnow()
+    duration_ms = (end_time - start_time).total_seconds() * 1000
+    
+    query_history_manager.add(
+        f"-- Python Worksheet\n{request.code[:200]}...",
+        session_id,
+        result["success"],
+        duration_ms,
+        0,
+        result.get("error")
+    )
+    
+    return result
+
+
+@app.post("/api/python-worksheets/validate")
+@handle_exceptions
+async def validate_python_code(request: PythonWorksheetExecuteRequest):
+    """Validate Python code without executing"""
+    if not request.code:
+        return {"valid": False, "error": "No code provided"}
+    
+    # Get executor for validation
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    py_executor = PythonWorksheetExecutor(executor)
+    return py_executor.validate_code(request.code)
+
+
+@app.get("/api/python-worksheets/{worksheet_id}/execute")
+@handle_exceptions
+async def execute_python_worksheet_by_id(worksheet_id: str):
+    """Execute a saved Python worksheet"""
+    worksheet = workspace_manager.get_worksheet(worksheet_id)
+    if not worksheet:
+        raise HTTPException(status_code=404, detail="Worksheet not found")
+    
+    code = worksheet.get("sql", "")  # Code stored in sql field
+    context = worksheet.get("context", {})
+    
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    py_executor = PythonWorksheetExecutor(executor)
+    result = py_executor.execute(code, context)
+    
+    # Update worksheet execution info
+    workspace_manager.update_worksheet(worksheet_id, {
+        'last_executed': datetime.utcnow().isoformat(),
+        'execution_count': worksheet.get('execution_count', 0) + 1
+    })
+    
+    return result
+
+
+# ==================== Data Export Endpoints ====================
+
+class ExportQueryRequest(BaseModel):
+    sql: str
+    format: str = "csv"
+    options: Optional[Dict[str, Any]] = None
+
+
+class ExportTableRequest(BaseModel):
+    database: str
+    schema_name: str  # 'schema' is reserved
+    table: str
+    format: str = "csv"
+    options: Optional[Dict[str, Any]] = None
+
+
+class ExportSchemaRequest(BaseModel):
+    database: str
+    schema_name: str
+    format: str = "csv"
+    options: Optional[Dict[str, Any]] = None
+
+
+class ExportDatabaseRequest(BaseModel):
+    database: str
+    format: str = "sql"
+    options: Optional[Dict[str, Any]] = None
+
+
+class ExportTablesRequest(BaseModel):
+    tables: List[Dict[str, str]]  # List of {database, schema, table}
+    format: str = "csv"
+    options: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/export/formats")
+@handle_exceptions
+async def get_export_formats():
+    """Get available export formats and their options"""
+    return {
+        "formats": EXPORT_FORMATS,
+        "count": len(EXPORT_FORMATS)
+    }
+
+
+@app.post("/api/export/query")
+@handle_exceptions
+async def export_query_result(request: ExportQueryRequest):
+    """Export query results in the specified format"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_query_result(
+        request.sql,
+        request.format,
+        request.options or {}
+    )
+    
+    return result
+
+
+@app.post("/api/export/table")
+@handle_exceptions
+async def export_table(request: ExportTableRequest):
+    """Export a single table"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_table(
+        request.database,
+        request.schema_name,
+        request.table,
+        request.format,
+        request.options or {}
+    )
+    
+    return result
+
+
+@app.post("/api/export/schema")
+@handle_exceptions
+async def export_schema(request: ExportSchemaRequest):
+    """Export an entire schema"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_schema(
+        request.database,
+        request.schema_name,
+        request.format,
+        request.options or {}
+    )
+    
+    return result
+
+
+@app.post("/api/export/database")
+@handle_exceptions
+async def export_database(request: ExportDatabaseRequest):
+    """Export an entire database"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_database(
+        request.database,
+        request.format,
+        request.options or {}
+    )
+    
+    return result
+
+
+@app.post("/api/export/tables")
+@handle_exceptions
+async def export_multiple_tables(request: ExportTablesRequest):
+    """Export multiple selected tables"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_tables(
+        request.tables,
+        request.format,
+        request.options or {}
+    )
+    
+    return result
+
+
+@app.get("/api/export/ddl")
+@handle_exceptions
+async def export_ddl(database: str = None, schema: str = None, object_type: str = None):
+    """Export DDL statements for database objects"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    result = exporter.export_ddl(database, schema, object_type)
+    
+    return result
+
+
+@app.get("/api/export/table/{database}/{schema_name}/{table}")
+@handle_exceptions
+async def export_table_get(database: str, schema_name: str, table: str, 
+                          format: str = "csv", include_ddl: bool = False):
+    """Export a table via GET request"""
+    # Get executor
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    
+    exporter = DataExporter(executor)
+    options = {"include_ddl": include_ddl}
+    result = exporter.export_table(database, schema_name, table, format, options)
+    
+    # Return as downloadable file if binary
+    if result.get("success") and result.get("binary"):
+        return Response(
+            content=result["content"],
+            media_type=result["content_type"],
+            headers={
+                "Content-Disposition": f"attachment; filename={result['filename']}"
+            }
+        )
+    
+    return result
+
+
+# ==================== Object Management CRUD Endpoints ====================
+
+class CreateDatabaseRequest(BaseModel):
+    name: str
+    options: Optional[Dict[str, Any]] = None
+
+
+class AlterDatabaseRequest(BaseModel):
+    alterations: Dict[str, Any]
+
+
+class CreateSchemaRequest(BaseModel):
+    database: str
+    name: str
+    options: Optional[Dict[str, Any]] = None
+
+
+class AlterSchemaRequest(BaseModel):
+    alterations: Dict[str, Any]
+
+
+class CreateTableRequest(BaseModel):
+    database: str
+    schema_name: str
+    name: str
+    columns: List[Dict[str, Any]]
+    options: Optional[Dict[str, Any]] = None
+
+
+class AlterTableRequest(BaseModel):
+    alterations: Dict[str, Any]
+
+
+class CreateViewRequest(BaseModel):
+    database: str
+    schema_name: str
+    name: str
+    definition: str
+    options: Optional[Dict[str, Any]] = None
+
+
+class AlterViewRequest(BaseModel):
+    alterations: Dict[str, Any]
+
+
+class CreateStageRequest(BaseModel):
+    database: str
+    schema_name: str
+    name: str
+    options: Optional[Dict[str, Any]] = None
+
+
+class AlterStageRequest(BaseModel):
+    alterations: Dict[str, Any]
+
+
+class CreateFileFormatRequest(BaseModel):
+    database: str
+    schema_name: str
+    name: str
+    format_type: str
+    options: Optional[Dict[str, Any]] = None
+
+
+class CreateSequenceRequest(BaseModel):
+    database: str
+    schema_name: str
+    name: str
+    options: Optional[Dict[str, Any]] = None
+
+
+def _get_object_manager():
+    """Get an ObjectManager instance"""
+    if session_manager.count() > 0:
+        first_session = next(iter(session_manager.sessions.values()))
+        executor = first_session["executor"]
+    else:
+        executor = QueryExecutor(data_dir)
+    return ObjectManager(executor)
+
+
+# Database CRUD
+@app.post("/api/objects/databases")
+@handle_exceptions
+async def create_database(request: CreateDatabaseRequest):
+    """Create a new database"""
+    mgr = _get_object_manager()
+    return mgr.create_database(request.name, request.options)
+
+
+@app.put("/api/objects/databases/{database}")
+@handle_exceptions
+async def alter_database(database: str, request: AlterDatabaseRequest):
+    """Alter a database"""
+    mgr = _get_object_manager()
+    return mgr.alter_database(database, request.alterations)
+
+
+@app.delete("/api/objects/databases/{database}")
+@handle_exceptions
+async def drop_database(database: str, if_exists: bool = False, cascade: bool = False):
+    """Drop a database"""
+    mgr = _get_object_manager()
+    return mgr.drop_database(database, {"if_exists": if_exists, "cascade": cascade})
+
+
+@app.post("/api/objects/databases/{database}/undrop")
+@handle_exceptions
+async def undrop_database(database: str):
+    """Restore a dropped database"""
+    mgr = _get_object_manager()
+    return mgr.undrop_database(database)
+
+
+# Schema CRUD
+@app.post("/api/objects/schemas")
+@handle_exceptions
+async def create_schema(request: CreateSchemaRequest):
+    """Create a new schema"""
+    mgr = _get_object_manager()
+    return mgr.create_schema(request.database, request.name, request.options)
+
+
+@app.put("/api/objects/databases/{database}/schemas/{schema_name}")
+@handle_exceptions
+async def alter_schema(database: str, schema_name: str, request: AlterSchemaRequest):
+    """Alter a schema"""
+    mgr = _get_object_manager()
+    return mgr.alter_schema(database, schema_name, request.alterations)
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}")
+@handle_exceptions
+async def drop_schema(database: str, schema_name: str, 
+                      if_exists: bool = False, cascade: bool = False):
+    """Drop a schema"""
+    mgr = _get_object_manager()
+    return mgr.drop_schema(database, schema_name, {"if_exists": if_exists, "cascade": cascade})
+
+
+@app.post("/api/objects/databases/{database}/schemas/{schema_name}/undrop")
+@handle_exceptions
+async def undrop_schema(database: str, schema_name: str):
+    """Restore a dropped schema"""
+    mgr = _get_object_manager()
+    return mgr.undrop_schema(database, schema_name)
+
+
+# Table CRUD
+@app.post("/api/objects/tables")
+@handle_exceptions
+async def create_table(request: CreateTableRequest):
+    """Create a new table"""
+    mgr = _get_object_manager()
+    return mgr.create_table(
+        request.database, 
+        request.schema_name, 
+        request.name, 
+        request.columns, 
+        request.options
+    )
+
+
+@app.put("/api/objects/databases/{database}/schemas/{schema_name}/tables/{table}")
+@handle_exceptions
+async def alter_table(database: str, schema_name: str, table: str, 
+                      request: AlterTableRequest):
+    """Alter a table"""
+    mgr = _get_object_manager()
+    return mgr.alter_table(database, schema_name, table, request.alterations)
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}/tables/{table}")
+@handle_exceptions
+async def drop_table(database: str, schema_name: str, table: str,
+                     if_exists: bool = False, cascade: bool = False, purge: bool = False):
+    """Drop a table"""
+    mgr = _get_object_manager()
+    return mgr.drop_table(database, schema_name, table, 
+                         {"if_exists": if_exists, "cascade": cascade, "purge": purge})
+
+
+@app.post("/api/objects/databases/{database}/schemas/{schema_name}/tables/{table}/undrop")
+@handle_exceptions
+async def undrop_table(database: str, schema_name: str, table: str):
+    """Restore a dropped table"""
+    mgr = _get_object_manager()
+    return mgr.undrop_table(database, schema_name, table)
+
+
+@app.post("/api/objects/databases/{database}/schemas/{schema_name}/tables/{table}/truncate")
+@handle_exceptions
+async def truncate_table(database: str, schema_name: str, table: str):
+    """Truncate a table (remove all rows)"""
+    mgr = _get_object_manager()
+    return mgr.truncate_table(database, schema_name, table)
+
+
+# View CRUD
+@app.post("/api/objects/views")
+@handle_exceptions
+async def create_view(request: CreateViewRequest):
+    """Create a new view"""
+    mgr = _get_object_manager()
+    return mgr.create_view(
+        request.database,
+        request.schema_name,
+        request.name,
+        request.definition,
+        request.options
+    )
+
+
+@app.put("/api/objects/databases/{database}/schemas/{schema_name}/views/{view}")
+@handle_exceptions
+async def alter_view(database: str, schema_name: str, view: str,
+                     request: AlterViewRequest):
+    """Alter a view"""
+    mgr = _get_object_manager()
+    return mgr.alter_view(database, schema_name, view, request.alterations)
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}/views/{view}")
+@handle_exceptions
+async def drop_view(database: str, schema_name: str, view: str, if_exists: bool = False):
+    """Drop a view"""
+    mgr = _get_object_manager()
+    return mgr.drop_view(database, schema_name, view, {"if_exists": if_exists})
+
+
+# Stage CRUD
+@app.post("/api/objects/stages")
+@handle_exceptions
+async def create_stage(request: CreateStageRequest):
+    """Create a new stage"""
+    mgr = _get_object_manager()
+    return mgr.create_stage(
+        request.database,
+        request.schema_name,
+        request.name,
+        request.options
+    )
+
+
+@app.put("/api/objects/databases/{database}/schemas/{schema_name}/stages/{stage}")
+@handle_exceptions
+async def alter_stage(database: str, schema_name: str, stage: str,
+                      request: AlterStageRequest):
+    """Alter a stage"""
+    mgr = _get_object_manager()
+    return mgr.alter_stage(database, schema_name, stage, request.alterations)
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}/stages/{stage}")
+@handle_exceptions
+async def drop_stage(database: str, schema_name: str, stage: str, if_exists: bool = False):
+    """Drop a stage"""
+    mgr = _get_object_manager()
+    return mgr.drop_stage(database, schema_name, stage, {"if_exists": if_exists})
+
+
+# File Format CRUD
+@app.post("/api/objects/file-formats")
+@handle_exceptions
+async def create_file_format(request: CreateFileFormatRequest):
+    """Create a new file format"""
+    mgr = _get_object_manager()
+    return mgr.create_file_format(
+        request.database,
+        request.schema_name,
+        request.name,
+        request.format_type,
+        request.options
+    )
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}/file-formats/{file_format}")
+@handle_exceptions
+async def drop_file_format(database: str, schema_name: str, file_format: str, 
+                           if_exists: bool = False):
+    """Drop a file format"""
+    mgr = _get_object_manager()
+    return mgr.drop_file_format(database, schema_name, file_format, {"if_exists": if_exists})
+
+
+# Sequence CRUD
+@app.post("/api/objects/sequences")
+@handle_exceptions
+async def create_sequence(request: CreateSequenceRequest):
+    """Create a new sequence"""
+    mgr = _get_object_manager()
+    return mgr.create_sequence(
+        request.database,
+        request.schema_name,
+        request.name,
+        request.options
+    )
+
+
+@app.delete("/api/objects/databases/{database}/schemas/{schema_name}/sequences/{sequence}")
+@handle_exceptions
+async def drop_sequence(database: str, schema_name: str, sequence: str, 
+                        if_exists: bool = False):
+    """Drop a sequence"""
+    mgr = _get_object_manager()
+    return mgr.drop_sequence(database, schema_name, sequence, {"if_exists": if_exists})
+
+
+# Object DDL
+@app.get("/api/objects/{object_type}/{database}/{schema_name}/{name}/ddl")
+@handle_exceptions
+async def get_object_ddl(object_type: str, database: str, schema_name: str, name: str):
+    """Get the CREATE statement for an object"""
+    mgr = _get_object_manager()
+    return mgr.get_create_statement(object_type, database, schema_name, name)
+
+
+@app.get("/api/objects/types")
+@handle_exceptions
+async def list_object_types():
+    """List supported object types"""
+    mgr = _get_object_manager()
+    return {"object_types": mgr.list_object_types()}
 
 
 # Old embedded HTML removed - now loaded from templates/dashboard.html

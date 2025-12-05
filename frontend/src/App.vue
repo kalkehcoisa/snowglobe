@@ -82,6 +82,22 @@
             @import-complete="handleImportComplete"
           />
 
+          <!-- Data Export View -->
+          <DataExport
+            v-if="activeView === 'export'"
+          />
+
+          <!-- Object Manager View -->
+          <ObjectManager
+            v-if="activeView === 'objects'"
+          />
+
+          <!-- Python Worksheet View -->
+          <PythonWorksheet
+            v-if="activeView === 'python'"
+            @execution-success="handleQueryExecuted"
+          />
+
           <!-- Stages Browser -->
           <ObjectBrowser
             v-if="activeView === 'stages'"
@@ -144,6 +160,9 @@ import ObjectBrowserNew from './components/ObjectBrowserNew.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import LogsPage from './components/LogsPage.vue'
 import DataImport from './components/DataImport.vue'
+import DataExport from './components/DataExport.vue'
+import ObjectManager from './components/ObjectManager.vue'
+import PythonWorksheet from './components/PythonWorksheet.vue'
 
 export default {
   name: 'App',
@@ -158,7 +177,10 @@ export default {
     ObjectBrowserNew,
     SettingsPanel,
     LogsPage,
-    DataImport
+    DataImport,
+    DataExport,
+    ObjectManager,
+    PythonWorksheet
   },
   data() {
     return {

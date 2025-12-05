@@ -108,14 +108,17 @@ export default {
   computed: {
     workspaceItems() {
       return [
-        { id: 'worksheets', label: 'Worksheets', icon: '📝', badge: this.worksheetCount },
+        { id: 'worksheets', label: 'SQL Worksheets', icon: '📝', badge: this.worksheetCount },
+        { id: 'python', label: 'Python Worksheets', icon: '🐍' },
         { id: 'overview', label: 'Home', icon: '🏠' },
       ]
     },
     dataItems() {
       return [
         { id: 'databases', label: 'Object Browser', icon: '🗄️' },
+        { id: 'objects', label: 'Object Manager', icon: '🛠️' },
         { id: 'import', label: 'Import Data', icon: '📥' },
+        { id: 'export', label: 'Export Data', icon: '📤' },
         { id: 'stages', label: 'Stages', icon: '📦' },
       ]
     },

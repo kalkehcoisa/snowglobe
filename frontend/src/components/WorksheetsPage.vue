@@ -13,7 +13,7 @@
           <div 
             v-for="(ws, index) in worksheets" 
             :key="ws.id"
-            :class="['worksheet-tab', { active: activeWorksheetId === ws.id, dragging: draggedIndex === index }]"
+            :class="['worksheet-tab', { active: activeWorksheetId === ws.id, dragging: draggedIndex === index, python: ws.worksheet_type === 'python' }]"
             :draggable="true"
             @click="selectWorksheet(ws.id)"
             @dragstart="handleDragStart($event, index)"
@@ -22,7 +22,7 @@
             @drop="handleDrop($event, index)"
           >
             <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
-            <span class="tab-icon">{{ ws.is_favorite ? '⭐' : '📝' }}</span>
+            <span class="tab-icon">{{ getWorksheetIcon(ws) }}</span>
             <input 
               v-if="ws.isEditing"
               v-model="ws.name"
@@ -50,9 +50,15 @@
           <button class="btn-icon-small" @click="duplicateWorksheet" title="Duplicate" v-if="activeWorksheet">
             📋
           </button>
-          <button class="add-worksheet-btn" @click="addWorksheet" title="New Worksheet">
-            <span>+</span>
-          </button>
+          <div class="add-dropdown">
+            <button class="add-worksheet-btn" @click="showAddMenu = !showAddMenu" title="New Worksheet">
+              <span>+</span>
+            </button>
+            <div v-if="showAddMenu" class="add-menu">
+              <button @click="addWorksheet('sql')">📝 SQL Worksheet</button>
+              <button @click="addWorksheet('python')">🐍 Python Worksheet</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -240,7 +246,9 @@ export default {
       isSaving: false,
       // Drag and drop for reordering
       draggedIndex: null,
-      dragOverIndex: null
+      dragOverIndex: null,
+      // Add worksheet menu
+      showAddMenu: false
     }
   },
   computed: {
@@ -321,11 +329,14 @@ export default {
       }
     },
     
-    async addWorksheet() {
+    async addWorksheet(type = 'sql') {
+      this.showAddMenu = false
+      
       try {
+        const isPython = type === 'python'
         const response = await axios.post('/api/worksheets', {
-          name: `Worksheet ${this.worksheets.length + 1}`,
-          sql: '',
+          name: isPython ? `Python ${this.worksheets.length + 1}` : `Worksheet ${this.worksheets.length + 1}`,
+          sql: isPython ? '# Python Worksheet\n# Use session.sql() to execute queries\n\ndf = session.sql("SELECT 1 as value")\nprint(df.show())' : '',
           context: {
             database: 'SNOWGLOBE',
             schema: 'PUBLIC',
@@ -337,8 +348,17 @@ export default {
         const newWorksheet = {
           ...response.data.worksheet,
           result: null,
-          isEditing: false
+          isEditing: false,
+          worksheet_type: type
         }
+        
+        // Update worksheet type on backend
+        if (isPython) {
+          await axios.put(`/api/worksheets/${newWorksheet.id}`, {
+            worksheet_type: 'python'
+          })
+        }
+        
         this.worksheets.push(newWorksheet)
         this.activeWorksheetId = newWorksheet.id
       } catch (error) {
@@ -347,7 +367,7 @@ export default {
         const localId = `local_${Date.now()}`
         const newWorksheet = {
           id: localId,
-          name: `Worksheet ${this.worksheets.length + 1}`,
+          name: type === 'python' ? `Python ${this.worksheets.length + 1}` : `Worksheet ${this.worksheets.length + 1}`,
           sql: '',
           result: null,
           context: {
@@ -357,11 +377,18 @@ export default {
             role: 'ACCOUNTADMIN'
           },
           lastExecuted: null,
-          isEditing: false
+          isEditing: false,
+          worksheet_type: type
         }
         this.worksheets.push(newWorksheet)
         this.activeWorksheetId = localId
       }
+    },
+    
+    getWorksheetIcon(ws) {
+      if (ws.is_favorite) return '⭐'
+      if (ws.worksheet_type === 'python') return '🐍'
+      return '📝'
     },
     
     async closeWorksheet(index) {
@@ -854,6 +881,56 @@ export default {
   background: var(--bg-color);
   color: var(--primary-color);
   border-color: var(--primary-color);
+}
+
+.add-dropdown {
+  position: relative;
+}
+
+.add-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.25rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  min-width: 180px;
+}
+
+.add-menu button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.add-menu button:first-child {
+  border-radius: 8px 8px 0 0;
+}
+
+.add-menu button:last-child {
+  border-radius: 0 0 8px 8px;
+}
+
+.add-menu button:hover {
+  background: var(--bg-color);
+}
+
+.worksheet-tab.python {
+  border-top: 2px solid #3572A5;
+}
+
+.worksheet-tab.python.active {
+  border-bottom: 2px solid #3572A5;
 }
 
 .worksheet-content {
